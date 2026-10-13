@@ -15,6 +15,7 @@ config settings 'main'
 	option qualify_url 'https://speed.cloudflare.com/__down?bytes=16384'
 	option qualify_attempts '4'
 	option qualify_successes '2'
+	option parallel_checks '3'
 	list test_url 'https://www.gstatic.com/generate_204'
 	list test_url 'https://cp.cloudflare.com/generate_204'
 

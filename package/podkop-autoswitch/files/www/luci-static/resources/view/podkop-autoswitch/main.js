@@ -66,6 +66,8 @@ return view.extend({
         o = s.option(form.Value, 'qualify_url', _('URL проверки кандидата (тело ≥ 1 КБ)')); o.default = 'https://speed.cloudflare.com/__down?bytes=16384';
         o = s.option(form.Value, 'qualify_attempts', _('Попыток проверки кандидата')); o.datatype = 'range(2,6)'; o.default = '4';
         o = s.option(form.Value, 'qualify_successes', _('Успешных передач подряд')); o.datatype = 'range(2,6)'; o.default = '2';
+        o = s.option(form.Value, 'parallel_checks', _('Параллельных проверок'),
+            _('От 1 до 8 серверов одновременно, по умолчанию 3. Больше проверок требуют больше памяти и пропускной способности. Для всех проверок используется одно тестовое ядро sing-box.')); o.datatype = 'range(1,8)'; o.default = '3';
         o = s.option(form.DynamicList, 'test_url', _('Контрольные HTTPS URL'));
         o.validate = function(id, v) { return !v || /^https:\/\/[^\s]+$/.test(v) ? true : _('Требуется HTTPS URL'); };
         o = s.option(form.Value, 'update_interval', _('Обновление подписок, с')); o.datatype = 'range(300,2592000)'; o.default = '86400';
@@ -89,6 +91,7 @@ return view.extend({
                 else if (scan.state === 'success') scanText = _('Проверка завершена. Доступно: ') + scan.healthy + '/' + scan.total;
                 else if (scan.state === 'error') scanText = errorText(scan.code);
                 else if (scan.state === 'running') scanText = errorText('interrupted');
+                if (scan.elapsed_s != null && scan.state !== 'idle') scanText += ' · ' + scan.elapsed_s + ' ' + _('с');
                 var importText = _('Подписки ещё не загружены. Добавьте URL и нажмите «Сохранить и применить».');
                 if (d.fetch_queued) importText = _('Загрузка подписок ожидает выполнения.');
                 else if (loading) importText = _('Загрузка подписки №') + imported.source + '…';

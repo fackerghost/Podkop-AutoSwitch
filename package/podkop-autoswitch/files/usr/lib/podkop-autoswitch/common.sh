@@ -47,12 +47,14 @@ config() {
     DATA_FALLBACK=$(get data_fallback_url 'https://www.google.com/robots.txt')
     QUALIFY_URL=$(get qualify_url 'https://speed.cloudflare.com/__down?bytes=16384')
     QUALIFY_ATTEMPTS=$(get qualify_attempts 4); QUALIFY_SUCCESSES=$(get qualify_successes 2)
+    PARALLEL_CHECKS=$(get parallel_checks 3)
     num interval "$INTERVAL" 2 3600 && num threshold "$THRESHOLD" 1 20 &&
     num timeout "$TIMEOUT" 200 10000 && num cooldown "$COOLDOWN" 0 86400 &&
     num update "$UPDATE" 300 2592000 && num nodes "$MAX_NODES" 1 256 &&
     num bytes "$MAX_BYTES" 1024 8388608 || { fail 'Invalid numeric configuration'; return 1; }
     case "$AUTO:$AUTO_APPLY" in [01]:[01]) ;; *) return 1;; esac
     num attempts "$QUALIFY_ATTEMPTS" 2 6 && num successes "$QUALIFY_SUCCESSES" 2 "$QUALIFY_ATTEMPTS" || return 1
+    num parallel_checks "$PARALLEL_CHECKS" 1 8 || return 1
     case "$DATA_CHECK" in 0|1) ;; *) return 1;; esac
     case "$DATA_URL:$QUALIFY_URL:$DATA_FALLBACK" in https://*:https://*:https://*) ;; *) return 1;; esac
     URLS=$(get test_url 'https://www.gstatic.com/generate_204 https://cp.cloudflare.com/generate_204')
