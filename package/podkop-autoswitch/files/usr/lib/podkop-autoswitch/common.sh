@@ -4,9 +4,19 @@ PAS_RUN=${PAS_RUN:-/tmp/podkop-autoswitch}
 PAS_HOME=${PAS_HOME:-/etc/podkop-autoswitch}
 PAS_UCI=${PAS_UCI:-/etc/config}
 PAS_SB=${PAS_SB:-sing-box}
+PAS_PODKOP_INIT=${PAS_PODKOP_INIT:-/etc/init.d/podkop}
 umask 077
 mkdir -p "$PAS_RUN" "$PAS_HOME" || exit 1
 chmod 700 "$PAS_RUN" "$PAS_HOME"
+cleanup() {
+    case "${PAS_WORK:-}" in "$PAS_RUN"/fetch.*|"$PAS_RUN"/plan.*|"$PAS_RUN"/apply.*) rm -rf "$PAS_WORK";; esac
+    if [ "$(cat "$PAS_RUN/mutation.lock/pid" 2>/dev/null)" = "$$" ]; then
+        rm -f "$PAS_RUN/mutation.lock/pid"; rmdir "$PAS_RUN/mutation.lock" 2>/dev/null || :
+    fi
+    rm -f "$PAS_RUN"/auth.$$.* "$PAS_RUN/group.$$"
+}
+trap cleanup EXIT
+trap 'exit 1' INT TERM HUP
 log() { logger -t podkop-autoswitch -- "$*"; }
 fail() { log "$*"; printf '%s\n' "$*" >&2; return 1; }
 get() { local x; x=$(uci -c "$PAS_UCI" -q get "podkop-autoswitch.main.$1"); printf '%s\n' "${x:-$2}"; }
@@ -22,6 +32,7 @@ config() {
     MAX_BYTES=$(get max_bytes 1048576)
     DATA_CHECK=$(get data_check 1)
     DATA_URL=$(get data_url 'https://www.cloudflare.com/cdn-cgi/trace')
+    DATA_FALLBACK=$(get data_fallback_url 'https://www.google.com/robots.txt')
     QUALIFY_URL=$(get qualify_url 'https://speed.cloudflare.com/__down?bytes=16384')
     QUALIFY_ATTEMPTS=$(get qualify_attempts 4); QUALIFY_SUCCESSES=$(get qualify_successes 2)
     num interval "$INTERVAL" 2 3600 && num threshold "$THRESHOLD" 1 20 &&
@@ -30,7 +41,8 @@ config() {
     num bytes "$MAX_BYTES" 1024 8388608 || { fail 'Invalid numeric configuration'; return 1; }
     case "$AUTO:$AUTO_APPLY" in [01]:[01]) ;; *) return 1;; esac
     num attempts "$QUALIFY_ATTEMPTS" 2 6 && num successes "$QUALIFY_SUCCESSES" 2 "$QUALIFY_ATTEMPTS" || return 1
-    case "$DATA_URL:$QUALIFY_URL" in https://*:https://*) ;; *) return 1;; esac
+    case "$DATA_CHECK" in 0|1) ;; *) return 1;; esac
+    case "$DATA_URL:$QUALIFY_URL:$DATA_FALLBACK" in https://*:https://*:https://*) ;; *) return 1;; esac
     URLS=$(get test_url 'https://www.gstatic.com/generate_204 https://cp.cloudflare.com/generate_204')
     local url n=0
     for url in $URLS; do
@@ -54,7 +66,7 @@ lock() {
         fi
     fi
     echo $$ > "$PAS_RUN/mutation.lock/pid"
-    trap 'rm -f "$PAS_RUN/mutation.lock/pid"; rmdir "$PAS_RUN/mutation.lock" 2>/dev/null' EXIT
+    trap cleanup EXIT
     trap 'exit 1' INT TERM HUP
 }
 atomic() { cp "$1" "$2.new.$$" && chmod 600 "$2.new.$$" && mv -f "$2.new.$$" "$2"; }
@@ -68,13 +80,14 @@ api_config() {
         *) ip -4 addr show | grep -F "inet $host/" >/dev/null || { fail 'Controller must be local IPv4'; return 1; };;
     esac
     API="http://$host:$port"
+    AUTH="$PAS_RUN/auth.$$.$port"
     # Header is kept off the process command line. jq escapes curl config syntax.
     jq -r '(.experimental.clash_api.secret // "") | if length > 0 then
-        "header = " + ("Authorization: Bearer " + . | @json) else "" end' "$CONFIG_PATH" > "$PAS_RUN/auth.$$"
+        "header = " + ("Authorization: Bearer " + . | @json) else "" end' "$CONFIG_PATH" > "$AUTH"
 }
 api() {
     local method="$1" path="$2"; shift 2
-    curl -q -K "$PAS_RUN/auth.$$" --noproxy '*' -fsS --connect-timeout 2 --max-time "$((TIMEOUT/1000+3))" \
+    curl -q -K "$AUTH" --noproxy '*' -fsS --connect-timeout 2 --max-time "$((TIMEOUT/1000+3))" \
         -X "$method" "$API$path" "$@" 2>/dev/null
 }
 uri() { jq -nr --arg s "$1" '$s|@uri'; }
@@ -109,7 +122,7 @@ active_probe() {
     if [ "$DATA_CHECK" = 1 ]; then
         local port
         port=$(jq -er '.inbounds[]|select(.tag=="service-mixed-in" and .listen=="127.0.0.1")|.listen_port' "$CONFIG_PATH") || return 1
-        data_probe "$port" "$DATA_URL" 32
+        data_probe "$port" "$DATA_URL" 32 || data_probe "$port" "$DATA_FALLBACK" 32
     else probe "$1"; fi
 }
 select_proxy() {

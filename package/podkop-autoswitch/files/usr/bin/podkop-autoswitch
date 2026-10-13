@@ -7,6 +7,8 @@ PAS_LIB=${PAS_LIB:-/usr/lib/podkop-autoswitch}
 . "$PAS_LIB/subscriptions.sh"
 . "$PAS_LIB/preflight.sh"
 . "$PAS_LIB/integration.sh"
+# Recovery must work even if the newly edited addon settings are invalid.
+if [ "$1" = recover ]; then recover; exit $?; fi
 config || exit 1
 case "$1" in
     doctor) doctor;;
@@ -34,17 +36,26 @@ case "$1" in
         [ -s "$PAS_HOME/staged.json" ] && labels="$PAS_HOME/staged.json" || labels=/dev/null
         [ -s "$PAS_HOME/pool.json" ] && active="$PAS_HOME/pool.json" || active=/dev/null
         [ -s "$PAS_RUN/staged-health.json" ] && health="$PAS_RUN/staged-health.json" || health=/dev/null
-        jq --slurpfile staged "$labels" --slurpfile active "$active" --slurpfile health "$health" \
+        attached=false; [ ! -f "$PAS_HOME/attachment.json" ] || attached=true
+        jq --slurpfile staged "$labels" --slurpfile active "$active" --slurpfile health "$health" --argjson attached "$attached" \
           --arg enabled "$(get enabled 0)" --arg section "$SECTION" \
           '($staged + $active | [ .[][] ] | unique_by(.tag)) as $pool |
-           . + {enabled:($enabled=="1"),section:$section,available:[$pool[]|{tag,name:._pas_label,protocol:.type}]} |
+           . + {enabled:($enabled=="1"),attached:$attached,section:$section,available:[$pool[]|. as $node|{tag,name:._pas_label,protocol:.type,active:([ $active[][]? | .tag ] | index($node.tag) != null)}]} |
            .servers = ((.servers + [$health[][]?])|group_by(.tag)|map(sort_by(.checked_at)|last)) |
            .servers |= map(. as $s | . + {name:([$pool[]|select(.tag==$s.tag)|._pas_label][0] // .tag)})' "$PAS_RUN/status.json";;
     request-fetch|request-apply|request-scan) touch "$PAS_RUN/$1";;
     select)
         case "$2" in pas_*-out) ;; *) exit 1;; esac
         printf '%s\n' "$2" | grep -Eq '^pas_[a-f0-9]{24}-out$' || exit 1
-        lock && api_config && probe "$2" >/dev/null && select_proxy "$2" || { fail 'Manual selection failed health/API check'; exit 1; }
+        lock && api_config && group || exit 1
+        jq -e --arg t "$2" '.all|index($t)!=null' "$PAS_RUN/group.$$" >/dev/null || exit 1
+        if [ "$DATA_CHECK" = 1 ]; then
+            [ -s "$PAS_HOME/pool.json" ] || exit 1
+            jq --arg t "$2" '[.[]|select(.tag==$t)]' "$PAS_HOME/pool.json" > "$PAS_RUN/manual-pool.json"
+            preflight "$PAS_RUN/manual-pool.json" "$PAS_RUN/manual-check" || { fail 'Manual selection failed payload qualification'; exit 1; }
+            api_config || exit 1
+        fi
+        probe "$2" >/dev/null && select_proxy "$2" || { fail 'Manual selection failed health/API check'; exit 1; }
         remember "$2"
         log "Manual selection: $2";;
     *) echo 'Usage: podkop-autoswitch {doctor|fetch|plan|preflight|apply|detach|recover|status|select TAG|request-scan}' >&2; exit 2;;

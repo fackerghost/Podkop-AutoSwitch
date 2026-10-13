@@ -35,7 +35,7 @@ if a.action == 'upload':
             data = path.read_bytes()
             info = tarfile.TarInfo(relative)
             info.size = len(data)
-            info.mode = 0o755 if (data.startswith(b'#!/') or relative.startswith('usr/bin/')) else 0o600
+            info.mode = 0o755 if (data.startswith(b'#!/') or relative.startswith('usr/bin/')) else 0o644
             tar.addfile(info, io.BytesIO(data))
     cmd = f'mkdir -p {shlex.quote(a.destination)} && tar -xzf - -C {shlex.quote(a.destination)}'
     stdin, out, err = c.exec_command(cmd)

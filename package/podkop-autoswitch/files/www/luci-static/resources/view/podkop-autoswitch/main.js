@@ -5,6 +5,7 @@
 'require rpc';
 'require poll';
 'require ui';
+'require dom';
 
 var status = rpc.declare({ object: 'podkop-autoswitch', method: 'status', expect: {} });
 var fetchPool = rpc.declare({ object: 'podkop-autoswitch', method: 'fetch', expect: {} });
@@ -69,13 +70,13 @@ return view.extend({
                         E('td', { 'class': 'td' }, r.healthy === true ? _('Доступен') : r.healthy === false ? _('Недоступен') : _('Не проверен')),
                         E('td', { 'class': 'td' }, r.delay_ms != null ? r.delay_ms + ' ms' : '—'),
                         E('td', { 'class': 'td' }, checked),
-                        E('td', { 'class': 'td' }, button(_('Переключить'), function() { return selectNode(node.tag); }, !d.enabled || node.tag === d.current))
+                        E('td', { 'class': 'td' }, button(_('Переключить'), function() { return selectNode(node.tag); }, !d.enabled || !d.attached || !node.active || node.tag === d.current))
                     ]);
                 });
                 var names = {}; (d.available || []).forEach(function(x) { names[x.tag] = x.name; });
-                ui.setElementContent(state, [
+                dom.content(state, [
                     E('h3', {}, _('Состояние')),
-                    E('p', {}, _('Служба: ') + (d.enabled ? d.phase : _('выключена')) + ' · ' + _('Текущий: ') + (names[d.current] || d.current || '—') + ' · ' + _('Ошибок подряд: ') + (d.failures || 0)),
+                    E('p', {}, _('Служба: ') + (d.enabled ? d.phase : _('выключена')) + ' · ' + _('Пул: ') + (d.attached ? _('подключён') : _('не применён')) + ' · ' + _('Текущий: ') + (names[d.current] || d.current || '—') + ' · ' + _('Ошибок подряд: ') + (d.failures || 0)),
                     E('div', { 'class': 'cbi-page-actions' }, [
                         button(_('Обновить подписки'), fetchPool, !d.enabled), ' ',
                         button(_('Проверить все серверы'), scanPool, !d.enabled), ' ',
@@ -93,7 +94,7 @@ return view.extend({
                     ]),
                     E('table', { 'class': 'table' }, [E('tr', { 'class': 'tr table-titles' }, ['Сервер', 'Протокол', 'Проверка', 'Задержка', 'Время проверки', 'Действие'].map(function(x) { return E('th', { 'class': 'th' }, _(x)); }))].concat(rows))
                 ]);
-            }).catch(function(e) { ui.setElementContent(state, E('p', {}, _('RPC недоступен: ') + e.message)); });
+            }).catch(function(e) { dom.content(state, E('p', {}, _('RPC недоступен: ') + e.message)); });
         }, 5);
         return m.render().then(function(form) { return E('div', {}, [state, form]); });
     }

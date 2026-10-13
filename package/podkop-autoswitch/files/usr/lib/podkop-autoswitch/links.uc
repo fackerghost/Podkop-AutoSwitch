@@ -72,9 +72,14 @@ function parse_link(line) {
         }
         body = substr(body, 0, question);
     }
-    let allowed = ['security','sni','peer','alpn','fp','pbk','sid','type','host','path','serviceName',
-      'headerType','flow','packetEncoding','allowInsecure','insecure','obfs','obfs-password',
-      'upmbps','downmbps','congestion_control','udp_relay_mode','disable_sni','heartbeat','encryption'];
+    let allowed = [];
+    if (index(['vless','trojan','hy2','hysteria2','tuic'], scheme) >= 0)
+        allowed = ['security','sni','peer','alpn','fp','pbk','sid','allowInsecure','insecure'];
+    if (scheme == 'vless' || scheme == 'trojan')
+        allowed = [...allowed, 'type','host','path','serviceName','headerType'];
+    if (scheme == 'vless') allowed = [...allowed, 'flow','packetEncoding','encryption'];
+    if (scheme == 'hy2' || scheme == 'hysteria2') allowed = [...allowed, 'obfs','obfs-password','upmbps','downmbps'];
+    if (scheme == 'tuic') allowed = [...allowed, 'congestion_control','udp_relay_mode','disable_sni','heartbeat'];
     for (let key in q) if (index(allowed, key) < 0) die('Unsupported URI option: ' + key);
     if (scheme == 'ss' && index(body, '@') < 0) body = base64(body);
     m = match(body, /^(.*)@(\[[^]]+\]|[^:]+):([0-9]+)\/?$/);

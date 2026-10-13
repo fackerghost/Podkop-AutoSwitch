@@ -26,7 +26,7 @@ mkdir -p "$work/fsm/run" "$work/fsm/home"
 (
     PAS_RUN="$test_root/fsm/run"; PAS_HOME="$test_root/fsm/home"
     . "$PAS_LIB/monitor.sh"
-    INTERVAL=5; THRESHOLD=3; COOLDOWN=0; AUTO=1; MAX_NODES=64
+    INTERVAL=5; THRESHOLD=3; COOLDOWN=0; AUTO=1; MAX_NODES=64; DATA_CHECK=0
     a=pas_aaaaaaaaaaaaaaaaaaaaaaaa-out
     b=pas_bbbbbbbbbbbbbbbbbbbbbbbb-out
     printf '0\n' > "$test_root/tick"
@@ -70,4 +70,20 @@ printf '%s\n' '{"current":"a","failures":2,"threshold":3,"auto":true,"now":10,"l
 printf '%s\n' '{"current":"a","failures":2,"threshold":3,"auto":false,"now":99,"last_switch":0,"cooldown":0,"healthy":false,"candidate":"b"}' |
     jq -f "$PAS_LIB/policy.jq" | jq -e '.action=="disabled"' >/dev/null
 echo 'PASS cooldown and disabled automatic switching'
+
+# Exercise the real watchdog against temporary files with a harmless init stub.
+mkdir -p "$work/recovery/config" "$work/recovery/home/transaction"
+tx="$work/recovery/home/transaction"
+printf 'old UCI\n' > "$tx/podkop"
+printf 'old sing-box\n' > "$tx/config.json"
+printf '%s\n' "$work/recovery/sing-box.json" > "$tx/config-path"
+printf 'new UCI\n' > "$work/recovery/config/podkop"
+printf 'new sing-box\n' > "$work/recovery/sing-box.json"
+printf '#!/bin/sh\nexit 0\n' > "$work/recovery/init"
+chmod 700 "$work/recovery/init"
+PAS_PODKOP_INIT="$work/recovery/init" sh "$PAS_LIB/watchdog.sh" "$tx" "$work/recovery/config" "$work/recovery/home" now
+[ "$(cat "$work/recovery/config/podkop")" = 'old UCI' ]
+[ "$(cat "$work/recovery/sing-box.json")" = 'old sing-box' ]
+[ ! -d "$tx" ]
+echo 'PASS watchdog restores both files without touching production service'
 rm -rf "$work"

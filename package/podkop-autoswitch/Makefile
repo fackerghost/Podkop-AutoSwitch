@@ -23,7 +23,6 @@ endef
 
 define Package/podkop-autoswitch/conffiles
 /etc/config/podkop-autoswitch
-/etc/podkop-autoswitch/
 endef
 
 define Build/Compile

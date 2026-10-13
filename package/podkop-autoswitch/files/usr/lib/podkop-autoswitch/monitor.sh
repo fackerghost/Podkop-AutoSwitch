@@ -45,7 +45,7 @@ remember() {
 }
 monitor() {
     local current='' failures=0 switched=0 candidate delay phase start elapsed wait previous='' initialized=0 action next_scan=0
-    trap 'rm -f "$PAS_RUN/auth.$$" "$PAS_RUN/results.$$" "$PAS_RUN/group.$$" "$PAS_RUN/members.$$" "$PAS_RUN/selected.$$"; exit 0' INT TERM EXIT
+    trap 'rm -f "$PAS_RUN"/auth.$$.* "$PAS_RUN/results.$$" "$PAS_RUN/group.$$" "$PAS_RUN/members.$$" "$PAS_RUN/selected.$$"; exit 0' INT TERM EXIT
     : > "$PAS_RUN/results.$$"
     # A service reload must not cause a healthy server to be replaced.
     if [ -s "$PAS_RUN/status.json" ]; then
@@ -63,6 +63,10 @@ monitor() {
             sleep "$INTERVAL"; continue
         fi
         current=$(jq -r .now "$PAS_RUN/group.$$")
+        if [ "$DATA_CHECK" = 1 ] && ! jq -e 'any(.inbounds[]; .tag=="service-mixed-in" and .listen=="127.0.0.1")' "$CONFIG_PATH" >/dev/null; then
+            publish integration_error "$current" "$failures" "$switched"
+            sleep "$INTERVAL"; continue
+        fi
         # Only control selectors created by this addon. No urltest nesting.
         if ! jq -e '(.all|length)>0 and all(.all[]; startswith("pas_") and endswith("-out") and length==32)' "$PAS_RUN/group.$$" >/dev/null; then
             publish unmanaged "$current" 0 "$switched"; sleep "$INTERVAL"; continue

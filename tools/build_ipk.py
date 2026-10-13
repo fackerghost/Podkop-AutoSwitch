@@ -13,6 +13,14 @@ def tar_gz(files):
     raw = io.BytesIO()
     with gzip.GzipFile(fileobj=raw, mode='wb', mtime=EPOCH, filename='') as zipped:
         with tarfile.open(fileobj=zipped, mode='w', format=tarfile.GNU_FORMAT) as tar:
+            directories = set()
+            for name, _, _ in files:
+                directories.update(str(p).replace('\\', '/') for p in Path(name).parents if str(p) != '.')
+            for name in sorted(directories, key=lambda n: (n.count('/'), n)):
+                info = tarfile.TarInfo('./' + name + '/')
+                info.type, info.mode, info.mtime = tarfile.DIRTYPE, 0o755, EPOCH
+                info.uid = info.gid = 0
+                tar.addfile(info)
             for name, data, mode in sorted(files):
                 info = tarfile.TarInfo('./' + name)
                 info.size, info.mode, info.mtime = len(data), mode, EPOCH
@@ -60,7 +68,7 @@ exit 0
 '''
     metadata = tar_gz([
         ('control', control.encode(), 0o644),
-        ('conffiles', b'/etc/config/podkop-autoswitch\n/etc/podkop-autoswitch/\n', 0o644),
+        ('conffiles', b'/etc/config/podkop-autoswitch\n', 0o644),
         ('postinst', postinst.encode(), 0o755), ('prerm', prerm.encode(), 0o755),
     ])
     out = ROOT / 'dist'; out.mkdir(exist_ok=True)

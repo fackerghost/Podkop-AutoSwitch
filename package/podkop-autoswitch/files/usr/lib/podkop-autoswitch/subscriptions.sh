@@ -37,6 +37,7 @@ fetch() {
     lock || return 1
     local work section url enabled count=0
     work=$(mktemp -d "$PAS_RUN/fetch.XXXXXX") || return 1
+    PAS_WORK=$work
     : > "$work/pools.ndjson"
     uci -c "$PAS_UCI" -q show podkop-autoswitch | sed -n 's/^podkop-autoswitch\.\([^=]*\)=subscription$/\1/p' > "$work/sources"
     while IFS= read -r section; do
@@ -63,7 +64,9 @@ fetch() {
     # Validate with the actual installed core before accepting any update.
     jq -n --slurpfile nodes "$work/combined.json" '{outbounds:($nodes[0]|map(del(._pas_label)))}' > "$work/check.json"
     "$PAS_SB" check -c "$work/check.json" > "$work/check.log" 2>&1 || { fail 'Installed sing-box rejects subscription; active pool preserved'; return 1; }
-    atomic "$work/combined.json" "$PAS_HOME/staged.json" || return 1
+    if ! cmp -s "$work/combined.json" "$PAS_HOME/staged.json"; then
+        atomic "$work/combined.json" "$PAS_HOME/staged.json" || return 1
+    fi
     date +%s > "$PAS_RUN/last-fetch"
     log "Subscription staged: $(jq length "$work/combined.json") servers"
     # Work directory contains credentials; remove only this mktemp-owned directory.

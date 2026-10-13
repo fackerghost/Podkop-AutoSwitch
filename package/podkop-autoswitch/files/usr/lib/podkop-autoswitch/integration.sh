@@ -81,6 +81,7 @@ plan() {
     config && lock && doctor > "$PAS_RUN/doctor.log" 2>&1 || return 1
     owned
     local work; work=$(mktemp -d "$PAS_RUN/plan.XXXXXX") || return 1
+    PAS_WORK=$work
     prepare "$work" || return 1
     printf 'Validated plan: %s servers, target %s; applying restarts Podkop once.\n' "$(jq length "$work/pool.json")" "$SECTION"
     rm -rf "$work"
@@ -91,6 +92,7 @@ apply_pool() {
     owned
     local work tx="$PAS_HOME/transaction" candidate ready=0 i=0
     work=$(mktemp -d "$PAS_RUN/apply.XXXXXX") || return 1
+    PAS_WORK=$work
     prepare "$work" || return 1
     if [ -s "$PAS_HOME/pool.json" ] && cmp -s "$work/pool.json" "$PAS_HOME/pool.json"; then
         log 'Pool unchanged'; rm -rf "$work"; return 0
@@ -110,21 +112,25 @@ apply_pool() {
     cp "$PAS_UCI/podkop" "$tx/podkop"
     cp "$CONFIG_PATH" "$tx/config.json"
     printf '%s\n' "$CONFIG_PATH" > "$tx/config-path"
-    for i in pool.json attachment.json; do [ ! -f "$PAS_HOME/$i" ] || cp "$PAS_HOME/$i" "$tx/$i"; done
+    for i in pool.json attachment.json applied-sha256; do [ ! -f "$PAS_HOME/$i" ] || cp "$PAS_HOME/$i" "$tx/$i"; done
     # Keep original UCI for detach. Checksum guards against overwriting later admin edits.
-    [ -f "$PAS_HOME/original-podkop" ] || cp "$PAS_UCI/podkop" "$PAS_HOME/original-podkop"
+    if [ ! -f "$PAS_HOME/attachment.json" ]; then
+        cp "$PAS_UCI/podkop" "$PAS_HOME/original-podkop"
+        cp "$CONFIG_PATH" "$PAS_HOME/original-singbox.json"
+    fi
     sync
     /bin/sh "$PAS_LIB/watchdog.sh" "$tx" "$PAS_UCI" "$PAS_HOME" > "$PAS_RUN/rollback.log" 2>&1 &
     atomic "$work/uci/podkop" "$PAS_UCI/podkop" || return 1
-    /etc/init.d/podkop restart > "$PAS_RUN/restart.log" 2>&1 || { recover; return 1; }
+    "$PAS_PODKOP_INIT" restart > "$PAS_RUN/restart.log" 2>&1 || { recover; return 1; }
     i=0
     while [ "$i" -lt 20 ]; do
-        if api_config && group && select_proxy "$candidate" && probe "$candidate" >/dev/null; then ready=1; break; fi
+        if api_config && group && select_proxy "$candidate" && active_probe "$candidate" >/dev/null; then ready=1; break; fi
         sleep 2; i=$((i+1))
     done
     [ "$ready" = 1 ] || { recover; fail 'Application failed; rollback requested'; return 1; }
     # Do not commit after watchdog has taken ownership of recovery.
     mkdir "$tx/decision" 2>/dev/null || { fail 'Watchdog already recovering'; return 1; }
+    echo $$ > "$tx/decision/pid"
     atomic "$work/pool.json" "$PAS_HOME/pool.json" && atomic "$work/attachment.json" "$PAS_HOME/attachment.json" || return 1
     sha256sum "$PAS_UCI/podkop" | cut -d' ' -f1 > "$PAS_HOME/applied-sha256"
     touch "$tx/committed"
@@ -138,12 +144,33 @@ recover() {
 }
 detach() {
     config && lock || return 1
-    [ -f "$PAS_HOME/original-podkop" ] || return 0
+    [ -f "$PAS_HOME/attachment.json" ] || return 0
+    local tx="$PAS_HOME/transaction" ready=0 i=0
+    [ ! -d "$tx" ] || { fail 'Pending transaction; run recover first'; return 1; }
     [ "$(sha256sum "$PAS_UCI/podkop" | cut -d' ' -f1)" = "$(cat "$PAS_HOME/applied-sha256" 2>/dev/null)" ] || {
         fail 'Podkop was edited after attachment; restore original-podkop manually after merging your edits'; return 1;
     }
+    "$PAS_SB" check -c "$PAS_HOME/original-singbox.json" > "$PAS_RUN/detach-check.log" 2>&1 || {
+        fail 'Original sing-box config is incompatible with the installed version'; return 1;
+    }
+    mkdir "$tx" || return 1
+    cp "$PAS_UCI/podkop" "$tx/podkop" && cp "$CONFIG_PATH" "$tx/config.json" || return 1
+    printf '%s\n' "$CONFIG_PATH" > "$tx/config-path"
+    for i in pool.json attachment.json applied-sha256; do [ ! -f "$PAS_HOME/$i" ] || cp "$PAS_HOME/$i" "$tx/$i"; done
+    sync
+    /bin/sh "$PAS_LIB/watchdog.sh" "$tx" "$PAS_UCI" "$PAS_HOME" > "$PAS_RUN/rollback.log" 2>&1 &
     atomic "$PAS_HOME/original-podkop" "$PAS_UCI/podkop" || return 1
-    /etc/init.d/podkop restart || return 1
+    "$PAS_PODKOP_INIT" restart || { recover; return 1; }
+    i=0
+    while [ "$i" -lt 15 ]; do
+        if api_config && probe "$SELECTOR" >/dev/null; then ready=1; break; fi
+        sleep 2; i=$((i+1))
+    done
+    [ "$ready" = 1 ] || { recover; fail 'Original proxy did not recover; restored attached pool'; return 1; }
+    mkdir "$tx/decision" 2>/dev/null || return 1
+    echo $$ > "$tx/decision/pid"
     rm -f "$PAS_HOME/attachment.json" "$PAS_HOME/pool.json" "$PAS_HOME/applied-sha256" "$PAS_RUN/status.json"
+    touch "$tx/committed"; sync
+    rm -rf "$tx"
     log 'Original Podkop configuration restored'
 }

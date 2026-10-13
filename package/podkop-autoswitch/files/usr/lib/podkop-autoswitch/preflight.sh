@@ -3,6 +3,8 @@
 preflight() (
     local pool="$1" work="$2" port=19091 pid secret selected='' best=2147483647 tag delay i index=0 attempt streak sample
     mkdir -p "$work" || exit 1
+    : > "$work/results.ndjson"
+    rm -f "$work/selected"
     # Bind failure is safe: never kill an existing process to claim a port.
     secret=$(head -c 24 /dev/urandom | base64 | tr -d '\n')
     jq -n --slurpfile pool "$pool" --arg secret "$secret" --argjson port "$port" \
@@ -12,7 +14,7 @@ preflight() (
         experimental:{clash_api:{external_controller:("127.0.0.1:"+($port|tostring)),secret:$secret}}}' > "$work/config.json"
     "$PAS_SB" check -c "$work/config.json" > "$work/core.log" 2>&1 || exit 1
     "$PAS_SB" run -c "$work/config.json" >> "$work/core.log" 2>&1 & pid=$!
-    trap 'kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null; rm -f "$PAS_RUN/auth.$$"' EXIT
+    trap 'kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null; rm -f "${AUTH:-$work/no-auth}"' EXIT
     trap 'exit 1' INT TERM HUP
     CONFIG_PATH="$work/config.json"
     api_config || exit 1
