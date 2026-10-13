@@ -13,9 +13,30 @@ var applyPool = rpc.declare({ object: 'podkop-autoswitch', method: 'apply', expe
 var scanPool = rpc.declare({ object: 'podkop-autoswitch', method: 'scan', expect: {} });
 var selectNode = rpc.declare({ object: 'podkop-autoswitch', method: 'select', params: ['tag'], expect: {} });
 
+function errorText(code) {
+    var errors = {
+        no_subscriptions: _('Нет включённых подписок. Добавьте URL и нажмите «Сохранить и применить».'),
+        invalid_url: _('У подписки должен быть HTTPS URL.'),
+        download_failed: _('Не удалось скачать подписку. Проверьте URL, срок действия подписки и доступ к её сайту.'),
+        unsupported_format: _('Пустая подписка, неподдерживаемый формат или параметры узла. Поддерживаются sing-box JSON и URI/base64; Clash YAML не поддерживается.'),
+        core_rejected: _('Установленный sing-box не принимает конфигурацию подписки. Проверьте версию ядра и параметры протоколов.'),
+        too_large: _('Размер подписки превышает допустимый предел.'),
+        too_many_nodes: _('Число серверов превышает настройку «Максимум серверов».'),
+        interrupted: _('Задание было прервано. Повторите запрос.'),
+        scan_failed: _('Не удалось завершить проверку. Возможен конфликт портов тестового sing-box; проверьте системный журнал.'),
+        no_healthy_nodes: _('Ни один сервер не прошёл проверку передачи данных. Все серверы сохранены; можно проверить их снова.'),
+        monitoring_disabled: _('Сначала включите мониторинг и сохраните настройки для применения пула.'),
+        no_pool: _('Сначала загрузите подписки.'),
+        worker_unavailable: _('Не удалось запустить загрузчик. Проверьте системный журнал podkop-autoswitch.'),
+        invalid_config: _('Некорректные настройки аддона. Проверьте поля и системный журнал.'),
+        internal_error: _('Ошибка загрузки. Проверьте свободное место и системный журнал podkop-autoswitch.')
+    };
+    return errors[code] || _('Не удалось выполнить запрос. Проверьте системный журнал.');
+}
 function call(fn) {
     return fn().then(function(r) {
-        ui.addNotification(null, E('p', {}, r.queued ? _('Задание поставлено в очередь. Служба должна быть включена.') : _('Запрос выполнен.')));
+        if (r.ok === false) throw new Error(errorText(r.code));
+        if (r.queued) ui.addNotification(null, E('p', {}, _('Задание поставлено в очередь. Состояние обновляется автоматически.')));
     }).catch(function(e) { ui.addNotification(null, E('p', {}, e.message), 'error'); });
 }
 function button(label, fn, disabled) {
@@ -28,7 +49,8 @@ return view.extend({
         var m = new form.Map('podkop-autoswitch', _('Podkop AutoSwitch'),
             _('HTTPS-проверки через sing-box. Рабочий сервер сохраняется; автоматического возврата нет. Первое применение пула и изменение его состава перезапускают Podkop.'));
         var s = m.section(form.NamedSection, 'main', 'settings', _('Настройки'));
-        var o = s.option(form.Flag, 'enabled', _('Включить службу')); o.rmempty = false;
+        var o = s.option(form.Flag, 'enabled', _('Включить мониторинг и управление Podkop'),
+            _('Подписки загружаются и проверяются также при выключенном мониторинге.')); o.rmempty = false;
         o = s.option(form.ListValue, 'section', _('Секция Podkop'));
         uci.sections('podkop', 'section', function(x) {
             if (x.connection_type === 'proxy' && !x['.name'].startsWith('pas_')) o.value(x['.name']);
@@ -51,7 +73,7 @@ return view.extend({
             _('Применение изменённого пула перезапускает Podkop. Сначала проверьте работу ручного применения.')); o.rmempty = false;
         o = s.option(form.Value, 'max_nodes', _('Максимум серверов')); o.datatype = 'range(1,256)'; o.default = '64';
         s = m.section(form.TypedSection, 'subscription', _('Подписки'),
-            _('Несколько HTTPS-подписок объединяются; дубликаты удаляются. JSON sing-box, URI-списки и base64.'));
+            _('Добавьте HTTPS URL и нажмите «Сохранить и применить»: серверы загрузятся автоматически. Мониторинг включать не обязательно. Несколько подписок объединяются; форматы — sing-box JSON, URI-списки и base64.'));
         s.anonymous = true; s.addremove = true;
         o = s.option(form.Flag, 'enabled', _('Использовать')); o.default = '1'; o.rmempty = false;
         o = s.option(form.Value, 'url', _('URL подписки')); o.password = true; o.rmempty = false;
@@ -59,6 +81,21 @@ return view.extend({
         var state = E('div', { 'class': 'cbi-section' }, _('Загрузка состояния…'));
         poll.add(function() {
             return status().then(function(d) {
+                var imported = d.subscription || {}, loading = (imported.state === 'running' && d.worker_running) || d.fetch_queued;
+                var scan = d.scan || {}, scanning = (scan.state === 'running' && d.worker_running) || d.scan_queued;
+                var scanText = _('Проверка серверов ещё не запускалась.');
+                if (d.scan_queued) scanText = _('Проверка пула ожидает выполнения.');
+                else if (scanning) scanText = _('Проверка пула: ') + scan.checked + '/' + scan.total;
+                else if (scan.state === 'success') scanText = _('Проверка завершена. Доступно: ') + scan.healthy + '/' + scan.total;
+                else if (scan.state === 'error') scanText = errorText(scan.code);
+                else if (scan.state === 'running') scanText = errorText('interrupted');
+                var importText = _('Подписки ещё не загружены. Добавьте URL и нажмите «Сохранить и применить».');
+                if (d.fetch_queued) importText = _('Загрузка подписок ожидает выполнения.');
+                else if (loading) importText = _('Загрузка подписки №') + imported.source + '…';
+                else if (imported.state === 'success') importText = _('Загружено серверов: ') + imported.nodes + ' · ' + new Date(imported.last_success * 1000).toLocaleString();
+                else if (imported.state === 'error') importText = (imported.source ? _('Подписка №') + imported.source + ': ' : '') + errorText(imported.code) + (imported.detail ? ' (curl ' + imported.detail + ')' : '');
+                else if (imported.state === 'running') importText = errorText('interrupted');
+                if (imported.state === 'error' && imported.nodes) importText += ' ' + _('Ранее загруженные серверы сохранены.');
                 var results = {};
                 (d.servers || []).forEach(function(x) { results[x.tag] = x; });
                 var rows = (d.available || []).map(function(node) {
@@ -73,13 +110,16 @@ return view.extend({
                         E('td', { 'class': 'td' }, button(_('Переключить'), function() { return selectNode(node.tag); }, !d.enabled || !d.attached || !node.active || node.tag === d.current))
                     ]);
                 });
+                if (!rows.length) rows.push(E('tr', { 'class': 'tr' }, [E('td', { 'class': 'td', 'colspan': 6 }, loading ? _('Серверы появятся после загрузки подписок…') : _('Список пуст. Добавьте подписку и сохраните настройки; причину ошибки загрузки смотрите выше.'))]));
                 var names = {}; (d.available || []).forEach(function(x) { names[x.tag] = x.name; });
                 dom.content(state, [
                     E('h3', {}, _('Состояние')),
                     E('p', {}, _('Служба: ') + (d.enabled ? d.phase : _('выключена')) + ' · ' + _('Пул: ') + (d.attached ? _('подключён') : _('не применён')) + ' · ' + _('Текущий: ') + (names[d.current] || d.current || '—') + ' · ' + _('Ошибок подряд: ') + (d.failures || 0)),
+                    E('p', { 'class': imported.state === 'error' ? 'alert-message warning' : '' }, importText),
+                    E('p', { 'class': scan.state === 'error' ? 'alert-message warning' : '' }, scanText),
                     E('div', { 'class': 'cbi-page-actions' }, [
-                        button(_('Обновить подписки'), fetchPool, !d.enabled), ' ',
-                        button(_('Проверить все серверы'), scanPool, !d.enabled), ' ',
+                        button(_('Обновить подписки'), fetchPool, loading), ' ',
+                        button(_('Проверить все серверы'), scanPool, !(d.available || []).length || loading || scanning), ' ',
                         button(_('Применить пул'), function() {
                             return new Promise(function(resolve) {
                                 ui.showModal(_('Применить пул серверов?'), [
@@ -90,7 +130,7 @@ return view.extend({
                                     ])
                                 ]);
                             });
-                        }, !d.enabled)
+                        }, !d.enabled || !(d.available || []).length || loading)
                     ]),
                     E('table', { 'class': 'table' }, [E('tr', { 'class': 'tr table-titles' }, ['Сервер', 'Протокол', 'Проверка', 'Задержка', 'Время проверки', 'Действие'].map(function(x) { return E('th', { 'class': 'th' }, _(x)); }))].concat(rows))
                 ]);

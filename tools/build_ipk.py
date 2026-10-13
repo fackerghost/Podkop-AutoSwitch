@@ -6,7 +6,7 @@ import io
 import tarfile
 
 ROOT = Path(__file__).resolve().parents[1]
-VERSION = '0.1.0'
+VERSION = '0.1.1'
 EPOCH = 1791936000
 
 def tar_gz(files):
@@ -54,11 +54,13 @@ Description: Sticky proxy failover and subscription management for Podkop with L
 [ -n "$IPKG_INSTROOT" ] && exit 0
 chmod 600 /etc/config/podkop-autoswitch
 /etc/init.d/podkop-autoswitch enable
+/etc/init.d/podkop-autoswitch restart
 /etc/init.d/rpcd reload
 exit 0
 '''
     prerm = '''#!/bin/sh
 [ -n "$IPKG_INSTROOT" ] && exit 0
+case "$1" in upgrade|failed-upgrade) exit 0;; esac
 /etc/init.d/podkop-autoswitch stop
 if [ -f /etc/podkop-autoswitch/attachment.json ]; then
   /usr/bin/podkop-autoswitch detach || exit 1

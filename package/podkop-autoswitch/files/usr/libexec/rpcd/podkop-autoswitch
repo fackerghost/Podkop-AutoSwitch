@@ -1,14 +1,16 @@
 #!/bin/sh
 # No subscription URLs or credentials are returned by this RPC interface.
+PAS_BIN=${PAS_BIN:-/usr/bin/podkop-autoswitch}
 case "$1" in
 list)
     echo '{"status":{},"fetch":{},"apply":{},"scan":{},"select":{"tag":""}}';;
 call)
     case "$2" in
-    status) /usr/bin/podkop-autoswitch status;;
+    status) "$PAS_BIN" status;;
     fetch|apply|scan)
-        /usr/bin/podkop-autoswitch "request-$2" >/dev/null 2>&1
-        echo '{"queued":true}';;
+        result=$("$PAS_BIN" "request-$2" 2>/dev/null)
+        if [ -n "$result" ]; then printf '%s\n' "$result"
+        else echo '{"ok":false,"code":"invalid_config"}'; fi;;
     select)
         payload=$(cat)
         tag=$(printf '%s' "$payload" | jq -er '.tag|select(type=="string")') || { echo '{"ok":false}'; exit 0; }

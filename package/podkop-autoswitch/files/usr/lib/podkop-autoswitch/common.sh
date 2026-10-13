@@ -9,6 +9,18 @@ umask 077
 mkdir -p "$PAS_RUN" "$PAS_HOME" || exit 1
 chmod 700 "$PAS_RUN" "$PAS_HOME"
 cleanup() {
+    if [ "${PAS_FETCH_ACTIVE:-0}" = 1 ]; then
+        fetch_status error interrupted
+    fi
+    if [ "${PAS_SCAN_ACTIVE:-0}" = 1 ]; then
+        scan_status error interrupted
+    fi
+    if [ "$(cat "$PAS_RUN/preflight.lock/pid" 2>/dev/null)" = "$$" ]; then
+        rm -f "$PAS_RUN/preflight.lock/pid"; rmdir "$PAS_RUN/preflight.lock" 2>/dev/null || :
+    fi
+    if [ "$(cat "$PAS_RUN/updater.pid" 2>/dev/null)" = "$$" ]; then
+        rm -f "$PAS_RUN/updater.pid"
+    fi
     case "${PAS_WORK:-}" in "$PAS_RUN"/fetch.*|"$PAS_RUN"/plan.*|"$PAS_RUN"/apply.*) rm -rf "$PAS_WORK";; esac
     if [ "$(cat "$PAS_RUN/mutation.lock/pid" 2>/dev/null)" = "$$" ]; then
         rm -f "$PAS_RUN/mutation.lock/pid"; rmdir "$PAS_RUN/mutation.lock" 2>/dev/null || :

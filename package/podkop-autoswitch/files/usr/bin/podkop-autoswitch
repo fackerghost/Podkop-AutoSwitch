@@ -19,31 +19,27 @@ case "$1" in
     recover) recover;;
     run) monitor;;
     updater) updater;;
-    preflight)
-        # Separate lock: checks must not pause the active-server monitor.
-        mkdir "$PAS_RUN/preflight.lock" 2>/dev/null || exit 1
-        trap 'rmdir "$PAS_RUN/preflight.lock" 2>/dev/null' EXIT
-        preflight "$PAS_HOME/staged.json" "$PAS_RUN/preflight"; result=$?
-        if [ -f "$PAS_RUN/preflight/results.ndjson" ]; then
-            jq -s --argjson time "$(date +%s)" 'map(. + {healthy:(.delay_ms!=null),checked_at:$time})' \
-                "$PAS_RUN/preflight/results.ndjson" > "$PAS_RUN/staged-health.json.new"
-            mv "$PAS_RUN/staged-health.json.new" "$PAS_RUN/staged-health.json"
-            cat "$PAS_RUN/preflight/results.ndjson"
-        fi
-        exit "$result";;
+    preflight) scan_pool;;
     status)
         [ -s "$PAS_RUN/status.json" ] || echo '{"phase":"stopped","current":"","servers":[]}' > "$PAS_RUN/status.json"
         [ -s "$PAS_HOME/staged.json" ] && labels="$PAS_HOME/staged.json" || labels=/dev/null
         [ -s "$PAS_HOME/pool.json" ] && active="$PAS_HOME/pool.json" || active=/dev/null
         [ -s "$PAS_RUN/staged-health.json" ] && health="$PAS_RUN/staged-health.json" || health=/dev/null
+        [ -s "$PAS_RUN/subscription-status.json" ] && imports="$PAS_RUN/subscription-status.json" || imports=/dev/null
+        [ -s "$PAS_RUN/scan-status.json" ] && scans="$PAS_RUN/scan-status.json" || scans=/dev/null
+        scan_queued=false; [ ! -e "$PAS_RUN/request-scan" ] || scan_queued=true
+        fetch_queued=false; [ ! -e "$PAS_RUN/request-fetch" ] || fetch_queued=true
         attached=false; [ ! -f "$PAS_HOME/attachment.json" ] || attached=true
-        jq --slurpfile staged "$labels" --slurpfile active "$active" --slurpfile health "$health" --argjson attached "$attached" \
+        worker=false; worker_pid=$(cat "$PAS_RUN/updater.pid" 2>/dev/null)
+        if [ -n "$worker_pid" ] && kill -0 "$worker_pid" 2>/dev/null; then worker=true; fi
+        jq --slurpfile staged "$labels" --slurpfile active "$active" --slurpfile health "$health" --slurpfile imports "$imports" --slurpfile scans "$scans" \
+          --argjson attached "$attached" --argjson worker "$worker" --argjson scan_queued "$scan_queued" --argjson fetch_queued "$fetch_queued" \
           --arg enabled "$(get enabled 0)" --arg section "$SECTION" \
           '($staged + $active | [ .[][] ] | unique_by(.tag)) as $pool |
-           . + {enabled:($enabled=="1"),attached:$attached,section:$section,available:[$pool[]|. as $node|{tag,name:._pas_label,protocol:.type,active:([ $active[][]? | .tag ] | index($node.tag) != null)}]} |
+           . + {enabled:($enabled=="1"),attached:$attached,worker_running:$worker,subscription:($imports[0] // {state:"idle"}),scan:($scans[0] // {state:"idle"}),scan_queued:$scan_queued,fetch_queued:$fetch_queued,section:$section,available:[$pool[]|. as $node|{tag,name:._pas_label,protocol:.type,active:([ $active[][]? | .tag ] | index($node.tag) != null)}]} |
            .servers = ((.servers + [$health[][]?])|group_by(.tag)|map(sort_by(.checked_at)|last)) |
            .servers |= map(. as $s | . + {name:([$pool[]|select(.tag==$s.tag)|._pas_label][0] // .tag)})' "$PAS_RUN/status.json";;
-    request-fetch|request-apply|request-scan) touch "$PAS_RUN/$1";;
+    request-fetch|request-apply|request-scan) request_work "${1#request-}";;
     select)
         case "$2" in pas_*-out) ;; *) exit 1;; esac
         printf '%s\n' "$2" | grep -Eq '^pas_[a-f0-9]{24}-out$' || exit 1

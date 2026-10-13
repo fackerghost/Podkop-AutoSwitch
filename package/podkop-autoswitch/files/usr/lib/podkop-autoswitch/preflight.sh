@@ -40,9 +40,49 @@ preflight() (
         done
         [ "$streak" -ge "$QUALIFY_SUCCESSES" ] || delay=''
         jq -nc --arg tag "$tag" --argjson ms "${delay:-null}" '{tag:$tag,delay_ms:$ms}' >> "$work/results.ndjson"
+        if [ "${PAS_SCAN_ACTIVE:-0}" = 1 ]; then scan_status running; fi
         if [ -n "$delay" ] && [ "$delay" -lt "$best" ]; then best=$delay; selected=$tag; fi
         index=$((index+1))
     done < "$work/tags"
     [ -n "$selected" ] || exit 1
     printf '%s\n' "$selected" > "$work/selected"
 )
+scan_status() {
+    local results=/dev/null total=0
+    [ ! -s "$PAS_HOME/staged.json" ] || total=$(jq length "$PAS_HOME/staged.json")
+    [ ! -f "$PAS_RUN/preflight/results.ndjson" ] || results="$PAS_RUN/preflight/results.ndjson"
+    jq -sn --slurpfile results "$results" --arg state "$1" --arg code "${2:-}" \
+        --argjson total "$total" --argjson time "$(date +%s)" \
+        '{state:$state,code:$code,total:$total,checked:($results|length),
+          healthy:([$results[]|select(.delay_ms!=null)]|length),updated_at:$time}' \
+        > "$PAS_RUN/scan-status.json.$$" && mv "$PAS_RUN/scan-status.json.$$" "$PAS_RUN/scan-status.json"
+}
+scan_pool() {
+    local pid result checked total
+    [ -s "$PAS_HOME/staged.json" ] || { scan_status error no_pool; return 1; }
+    # Independent lock: an isolated scan must not freeze active health checks.
+    if ! mkdir "$PAS_RUN/preflight.lock" 2>/dev/null; then
+        pid=$(cat "$PAS_RUN/preflight.lock/pid" 2>/dev/null)
+        if [ -n "$pid" ] && ! kill -0 "$pid" 2>/dev/null; then
+            rm -f "$PAS_RUN/preflight.lock/pid"
+            rmdir "$PAS_RUN/preflight.lock" && mkdir "$PAS_RUN/preflight.lock" || return 1
+        else fail 'Another pool check is running'; return 1; fi
+    fi
+    printf '%s\n' "$$" > "$PAS_RUN/preflight.lock/pid"
+    PAS_SCAN_ACTIVE=1
+    mkdir -p "$PAS_RUN/preflight"
+    : > "$PAS_RUN/preflight/results.ndjson"
+    scan_status running
+    preflight "$PAS_HOME/staged.json" "$PAS_RUN/preflight"; result=$?
+    jq -s --argjson time "$(date +%s)" 'map(. + {healthy:(.delay_ms!=null),checked_at:$time})' \
+        "$PAS_RUN/preflight/results.ndjson" > "$PAS_RUN/staged-health.json.new" &&
+        mv "$PAS_RUN/staged-health.json.new" "$PAS_RUN/staged-health.json"
+    checked=$(jq -s length "$PAS_RUN/preflight/results.ndjson")
+    total=$(jq length "$PAS_HOME/staged.json")
+    if [ "$checked" -ne "$total" ]; then scan_status error scan_failed
+    elif [ "$result" -ne 0 ]; then scan_status error no_healthy_nodes
+    else scan_status success; fi
+    PAS_SCAN_ACTIVE=0
+    cat "$PAS_RUN/preflight/results.ndjson"
+    return "$result"
+}

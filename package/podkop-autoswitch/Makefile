@@ -1,7 +1,7 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=podkop-autoswitch
-PKG_VERSION:=0.1.0
+PKG_VERSION:=0.1.1
 PKG_RELEASE:=1
 PKG_LICENSE:=GPL-2.0-or-later
 PKG_MAINTAINER:=Podkop AutoSwitch contributors
@@ -39,6 +39,7 @@ define Package/podkop-autoswitch/postinst
 [ -n "$${IPKG_INSTROOT}" ] && exit 0
 chmod 600 /etc/config/podkop-autoswitch
 /etc/init.d/podkop-autoswitch enable
+/etc/init.d/podkop-autoswitch restart
 /etc/init.d/rpcd reload
 exit 0
 endef
@@ -46,6 +47,7 @@ endef
 define Package/podkop-autoswitch/prerm
 #!/bin/sh
 [ -n "$${IPKG_INSTROOT}" ] && exit 0
+case "$${1}" in upgrade|failed-upgrade) exit 0;; esac
 /etc/init.d/podkop-autoswitch stop
 if [ -f /etc/podkop-autoswitch/attachment.json ]; then
   /usr/bin/podkop-autoswitch detach || exit 1

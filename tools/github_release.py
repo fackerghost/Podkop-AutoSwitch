@@ -57,6 +57,8 @@ def main():
     p = argparse.ArgumentParser()
     p.add_argument('action', choices=['create', 'push', 'release', 'runs'])
     p.add_argument('--message', default='Implement Podkop AutoSwitch with LuCI and runtime checks')
+    p.add_argument('--version', default='0.1.1')
+    p.add_argument('--commit', default='main')
     a = p.parse_args()
     if a.action == 'create':
         try:
@@ -69,7 +71,8 @@ def main():
     elif a.action == 'push': publish(a.message)
     elif a.action == 'release':
         body = (ROOT / 'docs/RELEASE.md').read_text(encoding='utf-8')
-        r = api(f'/repos/{REPO}/releases', {'tag_name': 'v0.1.0', 'target_commitish': 'main', 'name': 'Podkop AutoSwitch 0.1.0 (preview)', 'body': body, 'prerelease': True, 'draft': False})
+        if not re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+', a.version): raise ValueError('Invalid version')
+        r = api(f'/repos/{REPO}/releases', {'tag_name': 'v' + a.version, 'target_commitish': a.commit, 'name': 'Podkop AutoSwitch ' + a.version + ' (preview)', 'body': body, 'prerelease': True, 'draft': False})
         print(r['html_url'])
     else:
         runs = api(f'/repos/{REPO}/actions/runs?per_page=5')['workflow_runs']
