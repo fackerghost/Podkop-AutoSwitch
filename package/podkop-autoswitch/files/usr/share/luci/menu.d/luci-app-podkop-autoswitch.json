@@ -1,0 +1,8 @@
+{
+  "admin/services/podkop-autoswitch": {
+    "title": "Podkop AutoSwitch",
+    "order": 61,
+    "action": { "type": "view", "path": "podkop-autoswitch/main" },
+    "depends": { "acl": ["luci-app-podkop-autoswitch"], "uci": { "podkop-autoswitch": true } }
+  }
+}

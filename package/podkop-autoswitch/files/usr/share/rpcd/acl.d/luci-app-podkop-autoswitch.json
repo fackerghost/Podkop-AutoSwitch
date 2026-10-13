@@ -1,0 +1,13 @@
+{
+  "luci-app-podkop-autoswitch": {
+    "description": "Manage Podkop AutoSwitch",
+    "read": {
+      "ubus": { "podkop-autoswitch": ["status"] },
+      "uci": ["podkop-autoswitch", "podkop"]
+    },
+    "write": {
+      "ubus": { "podkop-autoswitch": ["fetch", "apply", "scan", "select"] },
+      "uci": ["podkop-autoswitch"]
+    }
+  }
+}

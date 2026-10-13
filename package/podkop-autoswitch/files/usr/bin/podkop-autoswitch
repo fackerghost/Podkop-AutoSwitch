@@ -1,0 +1,51 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-or-later
+PAS_BIN=${PAS_BIN:-/usr/bin/podkop-autoswitch}
+PAS_LIB=${PAS_LIB:-/usr/lib/podkop-autoswitch}
+. "$PAS_LIB/common.sh"
+. "$PAS_LIB/monitor.sh"
+. "$PAS_LIB/subscriptions.sh"
+. "$PAS_LIB/preflight.sh"
+. "$PAS_LIB/integration.sh"
+config || exit 1
+case "$1" in
+    doctor) doctor;;
+    fetch) fetch;;
+    plan) plan;;
+    apply|attach) apply_pool;;
+    detach) detach;;
+    recover) recover;;
+    run) monitor;;
+    updater) updater;;
+    preflight)
+        # Separate lock: checks must not pause the active-server monitor.
+        mkdir "$PAS_RUN/preflight.lock" 2>/dev/null || exit 1
+        trap 'rmdir "$PAS_RUN/preflight.lock" 2>/dev/null' EXIT
+        preflight "$PAS_HOME/staged.json" "$PAS_RUN/preflight"; result=$?
+        if [ -f "$PAS_RUN/preflight/results.ndjson" ]; then
+            jq -s --argjson time "$(date +%s)" 'map(. + {healthy:(.delay_ms!=null),checked_at:$time})' \
+                "$PAS_RUN/preflight/results.ndjson" > "$PAS_RUN/staged-health.json.new"
+            mv "$PAS_RUN/staged-health.json.new" "$PAS_RUN/staged-health.json"
+            cat "$PAS_RUN/preflight/results.ndjson"
+        fi
+        exit "$result";;
+    status)
+        [ -s "$PAS_RUN/status.json" ] || echo '{"phase":"stopped","current":"","servers":[]}' > "$PAS_RUN/status.json"
+        [ -s "$PAS_HOME/staged.json" ] && labels="$PAS_HOME/staged.json" || labels=/dev/null
+        [ -s "$PAS_HOME/pool.json" ] && active="$PAS_HOME/pool.json" || active=/dev/null
+        [ -s "$PAS_RUN/staged-health.json" ] && health="$PAS_RUN/staged-health.json" || health=/dev/null
+        jq --slurpfile staged "$labels" --slurpfile active "$active" --slurpfile health "$health" \
+          --arg enabled "$(get enabled 0)" --arg section "$SECTION" \
+          '($staged + $active | [ .[][] ] | unique_by(.tag)) as $pool |
+           . + {enabled:($enabled=="1"),section:$section,available:[$pool[]|{tag,name:._pas_label,protocol:.type}]} |
+           .servers = ((.servers + [$health[][]?])|group_by(.tag)|map(sort_by(.checked_at)|last)) |
+           .servers |= map(. as $s | . + {name:([$pool[]|select(.tag==$s.tag)|._pas_label][0] // .tag)})' "$PAS_RUN/status.json";;
+    request-fetch|request-apply|request-scan) touch "$PAS_RUN/$1";;
+    select)
+        case "$2" in pas_*-out) ;; *) exit 1;; esac
+        printf '%s\n' "$2" | grep -Eq '^pas_[a-f0-9]{24}-out$' || exit 1
+        lock && api_config && probe "$2" >/dev/null && select_proxy "$2" || { fail 'Manual selection failed health/API check'; exit 1; }
+        remember "$2"
+        log "Manual selection: $2";;
+    *) echo 'Usage: podkop-autoswitch {doctor|fetch|plan|preflight|apply|detach|recover|status|select TAG|request-scan}' >&2; exit 2;;
+esac

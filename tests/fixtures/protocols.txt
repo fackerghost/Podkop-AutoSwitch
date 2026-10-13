@@ -1,0 +1,6 @@
+vless://00000000-0000-0000-0000-000000000001@example.com:443?security=tls&type=ws&path=%2Fws&sni=example.com#VLESS
+vmess://eyJ2IjogIjIiLCAicHMiOiAiVGVzdCBWTWVzcyIsICJhZGQiOiAiZXhhbXBsZS5jb20iLCAicG9ydCI6ICI0NDMiLCAiaWQiOiAiMDAwMDAwMDAtMDAwMC0wMDAwLTAwMDAtMDAwMDAwMDAwMDAxIiwgImFpZCI6ICIwIiwgIm5ldCI6ICJ3cyIsICJ0eXBlIjogIm5vbmUiLCAiaG9zdCI6ICJleGFtcGxlLmNvbSIsICJwYXRoIjogIi93cyIsICJ0bHMiOiAidGxzIiwgInNuaSI6ICJleGFtcGxlLmNvbSJ9
+trojan://test%3Apassword@example.com:443?security=tls&sni=example.com#Trojan
+ss://YWVzLTEyOC1nY206dGVzdC1wYXNzd29yZA==@example.com:443#Shadowsocks
+hy2://test-password@example.com:443?sni=example.com#Hysteria2
+tuic://00000000-0000-0000-0000-000000000001:test-password@example.com:443?alpn=h3&congestion_control=bbr#TUIC

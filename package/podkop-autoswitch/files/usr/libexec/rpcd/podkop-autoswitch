@@ -1,0 +1,23 @@
+#!/bin/sh
+# No subscription URLs or credentials are returned by this RPC interface.
+case "$1" in
+list)
+    echo '{"status":{},"fetch":{},"apply":{},"scan":{},"select":{"tag":""}}';;
+call)
+    case "$2" in
+    status) /usr/bin/podkop-autoswitch status;;
+    fetch|apply|scan)
+        /usr/bin/podkop-autoswitch "request-$2" >/dev/null 2>&1
+        echo '{"queued":true}';;
+    select)
+        payload=$(cat)
+        tag=$(printf '%s' "$payload" | jq -er '.tag|select(type=="string")') || { echo '{"ok":false}'; exit 0; }
+        printf '%s\n' "$tag" | grep -Eq '^pas_[a-f0-9]{24}-out$' || { echo '{"ok":false}'; exit 0; }
+        # Queue to avoid rpcd's execution timeout. The daemon performs validation.
+        umask 077; mkdir -p /tmp/podkop-autoswitch
+        printf '%s\n' "$tag" > /tmp/podkop-autoswitch/request-select.new
+        mv /tmp/podkop-autoswitch/request-select.new /tmp/podkop-autoswitch/request-select
+        echo '{"queued":true}';;
+    *) echo '{}';;
+    esac;;
+esac

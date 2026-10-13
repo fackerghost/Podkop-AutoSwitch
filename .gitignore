@@ -1,0 +1,7 @@
+.upstream/
+.tools/
+.private/
+__pycache__/
+.pytest_cache/
+dist/
+*.pyc
