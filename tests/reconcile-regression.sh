@@ -208,3 +208,43 @@ cp "$PAS_UCI/podkop" "$lab/before"
 cmp "$PAS_UCI/podkop" "$lab/before"
 [ "$(jq -r .state "$PAS_RUN/sync-status.json")" = paused ]
 echo 'PASS missing selector distinguished from API failure; disabled mode preserves manual proxy'
+
+(
+    PAS_RUN="$lab/monitor-run"; PAS_HOME="$lab/monitor-home"
+    mkdir -p "$PAS_RUN" "$PAS_HOME"
+    echo '{"section":"main","sections":[]}' > "$PAS_HOME/attachment.json"
+    . "$PAS_LIB/monitor.sh"
+    api_config() { return 0; }
+    group() { return 1; }
+    api() { echo '{}'; }
+    sleep() {
+        [ "$(jq -r .phase "$PAS_RUN/status.json")" = selector_missing ]
+        [ -f "$PAS_RUN/request-reconcile" ]
+        exit 0
+    }
+    monitor
+)
+echo 'PASS real monitor requests automatic reconciliation for a missing selector'
+
+cat > "$lab/sync-command" <<'SH'
+#!/bin/sh
+[ "$1" = sync-pool ] || exit 1
+cat "$PAS_TEST_LAB/clock" >> "$PAS_TEST_LAB/sync-calls"
+SH
+chmod +x "$lab/sync-command"
+(
+    trap cleanup EXIT
+    PAS_RUN="$lab/updater-run"; mkdir -p "$PAS_RUN"
+    PAS_BIN="$lab/sync-command"; UPDATE=3600; OUTAGE_REFRESH=60
+    echo 0 > "$lab/clock"
+    now() { cat "$lab/clock"; }
+    sleep() {
+        t=$(($(now)+20)); echo "$t" > "$lab/clock"
+        [ "$t" -lt 100 ] || exit 0
+        touch "$PAS_RUN/request-reconcile"
+    }
+    updater
+)
+printf '0\n60\n' > "$lab/expected-calls"
+cmp "$lab/expected-calls" "$lab/sync-calls"
+echo 'PASS real updater reconciles at startup and throttles repeated repair requests'
