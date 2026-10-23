@@ -56,7 +56,7 @@ chmod +x "$PAS_PODKOP_INIT"
 . "$PAS_LIB/integration.sh"
 . "$PAS_LIB/subscriptions.sh"
 trap 'cleanup; rm -rf "$lab"' EXIT
-config
+config || exit 1
 doctor() { [ "${1:-}" = prepare ] || sing-box check -c "$CONFIG_PATH"; }
 api_config() { return 0; }
 group() {
