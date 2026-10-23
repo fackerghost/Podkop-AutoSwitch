@@ -47,7 +47,11 @@
         byId('scan').disabled = busy || !nodes.length || scan.state === 'running' || d.scan_queued;
         const ready = d.enabled && d.attached && d.monitor_running && d.phase !== 'wan_unavailable' && !busy;
         const fragment = document.createDocumentFragment();
-        nodes.forEach(node => {
+        nodes.slice().sort((a, b) => {
+            const x = health.get(a.tag) || {}, y = health.get(b.tag) || {};
+            const left = x.delay_ms == null ? Infinity : x.delay_ms, right = y.delay_ms == null ? Infinity : y.delay_ms;
+            return (left === right ? 0 : left < right ? -1 : 1) || (a.name || a.tag).localeCompare(b.name || b.tag, 'ru');
+        }).forEach(node => {
             const r = health.get(node.tag) || {}, selected = node.tag === d.current;
             const row = document.createElement('article'), info = document.createElement('div'), title = document.createElement('strong');
             row.className = 'server' + (selected ? ' selected' : ''); title.textContent = (selected ? '● ' : '') + (node.name || node.tag);

@@ -107,7 +107,11 @@ return view.extend({
                 var syncText = sync.state === 'error' ? _('Не удалось автоматически подключить пул. Повтор выполняется автоматически; подробности в logread -e podkop-autoswitch.') : sync.code === 'wan_unavailable' ? phases.wan_unavailable : sync.code === 'no_subscriptions' ? errorText('no_subscriptions') : sync.state === 'preparing' ? _('Автоматическая проверка и подключение обновлённого пула…') : '';
                 var results = {};
                 (d.servers || []).forEach(function(x) { results[x.tag] = x; });
-                var rows = (d.available || []).map(function(node) {
+                var rows = (d.available || []).slice().sort(function(a, b) {
+                    var x = results[a.tag] || {}, y = results[b.tag] || {};
+                    var left = x.delay_ms == null ? Infinity : x.delay_ms, right = y.delay_ms == null ? Infinity : y.delay_ms;
+                    return (left === right ? 0 : left < right ? -1 : 1) || (a.name || a.tag).localeCompare(b.name || b.tag, 'ru');
+                }).map(function(node) {
                     var r = results[node.tag] || {};
                     var checked = r.checked_at ? new Date(r.checked_at * 1000).toLocaleTimeString() : '—';
                     return E('tr', { 'class': 'tr' }, [
