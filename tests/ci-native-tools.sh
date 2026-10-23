@@ -10,7 +10,9 @@ for spec in 'libubox da2d205a5cf3e877c45a2eec488218cbaf452e7d' 'uci 74f6277aabff
     cmake --build "$root/build-$1" -j2
     cmake --install "$root/build-$1"
 done
-curl -fLsS https://github.com/SagerNet/sing-box/releases/download/v1.12.22/sing-box-1.12.22-linux-amd64.tar.gz | tar xz -C "$root"
+curl -fLsS https://github.com/SagerNet/sing-box/releases/download/v1.12.22/sing-box-1.12.22-linux-amd64.tar.gz -o "$root/sing-box.tar.gz"
+printf '50a70a1b71064a7d8ef63737fbef2aa36c991d8dc1c54598b9513c2a15e25e9f  %s/sing-box.tar.gz\n' "$root" | sha256sum -c -
+tar xzf "$root/sing-box.tar.gz" -C "$root"
 cp "$root/sing-box-1.12.22-linux-amd64/sing-box" "$prefix/bin/"
 printf '%s\n' "$prefix/bin" >> "$GITHUB_PATH"
 printf 'LD_LIBRARY_PATH=%s/lib\n' "$prefix" >> "$GITHUB_ENV"
