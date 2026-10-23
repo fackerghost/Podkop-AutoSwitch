@@ -68,10 +68,12 @@ monitor() {
             touch "$PAS_RUN/request-reconcile"
         fi
         if ! api_config; then
+            failures=0; current=''
             publish api_unavailable '' 0 "$switched"
             sleep "$INTERVAL"; continue
         fi
         if ! group; then
+            failures=0; current=''
             phase=$(group_failure_phase)
             [ "$phase" != selector_missing ] || touch "$PAS_RUN/request-reconcile"
             publish "$phase" '' 0 "$switched"
