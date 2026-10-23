@@ -99,3 +99,13 @@ commit_restore() {
     atomic "$1/restore/podkop" "$PAS_HOME/original-podkop" &&
         atomic "$1/restore-config.json" "$PAS_HOME/original-singbox.json"
 }
+runtime_matches() {
+    jq -e --slurpfile pool "$1/pool.json" --arg selector "$SELECTOR" --arg data "$DATA_CHECK" '
+        ($pool[0]|map(del(._pas_label))|sort_by(.tag)) as $nodes |
+        ([$nodes[].tag]) as $tags |
+        ([.outbounds[]|select(.tag as $t | $tags|index($t)!=null)]|sort_by(.tag))==$nodes and
+        any(.outbounds[]; .tag==$selector and .type=="selector" and (.outbounds|sort)==($tags|sort)) and
+        ($data!="1" or (any(.inbounds[]; .tag=="service-mixed-in" and .listen=="127.0.0.1" and .listen_port==4534) and
+          any(.route.rules[]; .outbound==$selector and ((.inbound // [] | if type=="string" then [.] else . end)|index("service-mixed-in")!=null))))
+    ' "$CONFIG_PATH" >/dev/null
+}

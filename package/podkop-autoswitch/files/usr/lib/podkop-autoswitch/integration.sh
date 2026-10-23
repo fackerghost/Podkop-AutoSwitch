@@ -75,7 +75,7 @@ owned() {
     else echo '[]'; fi > "$PAS_RUN/owned.json"
 }
 plan() {
-    config && lock && doctor > "$PAS_RUN/doctor.log" 2>&1 || return 1
+    config && lock && doctor prepare > "$PAS_RUN/doctor.log" 2>&1 || return 1
     owned
     local work; work=$(mktemp -d "$PAS_RUN/plan.XXXXXX") || return 1
     PAS_WORK=$work
@@ -84,7 +84,7 @@ plan() {
     rm -rf "$work"
 }
 apply_pool() {
-    config && doctor > "$PAS_RUN/doctor.log" 2>&1 || return 1
+    config && doctor prepare > "$PAS_RUN/doctor.log" 2>&1 || return 1
     [ ! -d "$PAS_HOME/transaction" ] || { fail 'Pending recovery; run recover first'; return 1; }
     owned
     local work tx="$PAS_HOME/transaction" candidate ready=0 i=0 before
@@ -95,7 +95,7 @@ apply_pool() {
     if [ -s "$PAS_HOME/attachment.json" ] && [ -s "$PAS_HOME/pool.json" ] && cmp -s "$work/pool.json" "$PAS_HOME/pool.json" &&
         managed_signature "$PAS_UCI" "$work/sections" > "$work/current-signature" &&
         managed_signature "$work/uci" "$work/sections" > "$work/next-signature" &&
-        cmp -s "$work/current-signature" "$work/next-signature" && group &&
+        cmp -s "$work/current-signature" "$work/next-signature" && runtime_matches "$work" && group &&
         jq -e --slurpfile pool "$work/pool.json" '(.all|sort)==([$pool[0][].tag]|sort)' "$PAS_RUN/group.$$" >/dev/null; then
         lock || return 1
         [ "$before" = "$(sha256sum "$PAS_UCI/podkop" | cut -d' ' -f1)" ] &&

@@ -57,7 +57,7 @@ chmod +x "$PAS_PODKOP_INIT"
 . "$PAS_LIB/subscriptions.sh"
 trap 'cleanup; rm -rf "$lab"' EXIT
 config
-doctor() { sing-box check -c "$CONFIG_PATH"; }
+doctor() { [ "${1:-}" = prepare ] || sing-box check -c "$CONFIG_PATH"; }
 api_config() { return 0; }
 group() {
     jq -e '.outbounds[]|select(.tag=="main-out" and .type=="selector")|{type:"Selector",all:.outbounds,now:.default}' "$CONFIG_PATH" > "$PAS_RUN/group.$$"
@@ -121,6 +121,14 @@ apply
 [ "$(restarts)" = "$((n+1))" ]
 echo 'PASS deleted section rebuilt even while old runtime selector is still present'
 
+jq --arg t "$a" '.outbounds |= map(select(.tag!=$t))' "$CONFIG_PATH" > "$lab/broken.json"
+mv "$lab/broken.json" "$CONFIG_PATH"
+n=$(restarts)
+apply
+[ "$(restarts)" = "$((n+1))" ]
+sing-box check -c "$CONFIG_PATH"
+echo 'PASS incomplete generated runtime config rebuilt instead of requiring a healthy existing pool'
+
 uci -c "$PAS_UCI" add_list podkop.main.user_domains=later.example
 uci -c "$PAS_UCI" commit podkop
 n=$(restarts)
@@ -146,6 +154,19 @@ uci -c "$PAS_UCI" commit podkop
 echo 'PASS foreign ownership and user rules inside generated sections are protected'
 
 manual
+touch "$lab/wan-failed"
+cp "$PAS_UCI/podkop" "$lab/before"
+n=$(restarts)
+if apply; then echo 'FAIL applied without direct Internet'; exit 1; fi
+cmp "$PAS_UCI/podkop" "$lab/before"
+[ "$(restarts)" = "$n" ]
+rm "$lab/wan-failed"
+uci -c "$PAS_UCI" set podkop.main.user_domains=uncommitted.example
+if apply; then echo 'FAIL pending LuCI edit accepted'; exit 1; fi
+cmp "$PAS_UCI/podkop" "$lab/before"
+uci -c "$PAS_UCI" revert podkop
+echo 'PASS WAN outage and pending LuCI edits postpone reconciliation'
+
 touch "$lab/no-candidate"
 cp "$PAS_UCI/podkop" "$lab/before"
 n=$(restarts)

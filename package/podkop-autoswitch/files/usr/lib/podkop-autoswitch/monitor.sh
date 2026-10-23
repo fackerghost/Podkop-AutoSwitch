@@ -85,6 +85,7 @@ monitor() {
         fi
         # Only control selectors created by this addon. No urltest nesting.
         if ! jq -e '(.all|length)>0 and all(.all[]; startswith("pas_") and endswith("-out") and length==32)' "$PAS_RUN/group.$$" >/dev/null; then
+            touch "$PAS_RUN/request-reconcile"
             publish unmanaged "$current" 0 "$switched"; sleep "$INTERVAL"; continue
         fi
         if [ -n "$previous" ] && [ "$current" != "$previous" ]; then

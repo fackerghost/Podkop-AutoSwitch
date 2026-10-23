@@ -34,6 +34,7 @@ mkdir -p "$work/fsm/run" "$work/fsm/home"
     printf '%s\n' "$b" > "$test_root/selected"
     now() { echo $(($(cat "$test_root/tick")*5)); }
     api_config() { return 0; }
+    api() { return 1; }
     wan_probe() { return 0; }
     group() {
         [ "$(cat "$test_root/tick")" != 6 ] || return 1

@@ -198,6 +198,12 @@ doctor() {
     grep -q 'sing_box_cm_add_raw_outbound()' /usr/lib/podkop/sing_box_config_manager.sh || return 1
     [ "$(uci -c "$PAS_UCI" -q get "podkop.$SECTION")" = section ] || return 1
     [ "$(uci -c "$PAS_UCI" -q get "podkop.$SECTION.connection_type")" = proxy ] || { fail 'Target is not a proxy section'; return 1; }
+    # Rebuilding deleted pool members must also work after Podkop's restart
+    # failed because its selector references those missing outbounds.
+    if [ "${1:-}" = prepare ]; then
+        jq -e '(.outbounds|type)=="array" and (.inbounds|type)=="array" and (.route|type)=="object"' "$CONFIG_PATH" >/dev/null
+        return $?
+    fi
     "$PAS_SB" check -c "$CONFIG_PATH" > "$PAS_RUN/check.log" 2>&1 || { fail 'Current sing-box configuration fails validation'; return 1; }
     api_config && api GET /version | jq -e 'type == "object"' || { fail 'Clash API unavailable'; return 1; }
 }
