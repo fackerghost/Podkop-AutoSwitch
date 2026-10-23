@@ -4,10 +4,10 @@ qualify_node() (
     # A background worker must never inherit the parent's core cleanup trap.
     trap - EXIT
     trap 'exit 1' INT TERM HUP
-    local tag="$1" index="$2" work="$3" attempt=0 streak=0 delay='' sample
+    local tag="$1" index="$2" work="$3" base="${4:-19100}" attempt=0 streak=0 delay='' sample
     while [ "$attempt" -lt "$QUALIFY_ATTEMPTS" ]; do
         attempt=$((attempt+1))
-        if sample=$(data_probe "$((19100+index))" "$QUALIFY_URL" 1024); then
+        if sample=$(data_probe "$((base+index))" "$QUALIFY_URL" 1024); then
             streak=$((streak+1)); delay=$sample
             [ "$streak" -lt "$QUALIFY_SUCCESSES" ] || break
         else streak=0; delay=''; fi
@@ -48,16 +48,20 @@ reap_checks() {
 }
 # Loopback only: no TUN/TPROXY/DNS listeners and no routing rules.
 preflight() (
-    local pool="$1" work="$2" port=19091 pid secret selected tag i index=0
+    local pool="$1" work="$2" port=19091 base=19100 pid secret selected tag i index=0
+    # Manual LuCI checks must not occupy the failover core's listening ports.
+    if [ "${3:-}" = failover ]; then port=19991; base=20000; fi
+    if [ "${3:-}" = apply ]; then port=18991; base=21000; fi
+    if [ "${3:-}" = manual ]; then port=18992; base=22000; fi
     local check_pids='' running=0 child
     mkdir -p "$work" || exit 1
     : > "$work/results.ndjson"
     rm -f "$work/selected" "$work"/node-*.json "$work"/node-*.tmp
     # Bind failure is safe: never kill an existing process to claim a port.
     secret=$(head -c 24 /dev/urandom | base64 | tr -d '\n')
-    jq -n --slurpfile pool "$pool" --arg secret "$secret" --argjson port "$port" \
+    jq -n --slurpfile pool "$pool" --arg secret "$secret" --argjson port "$port" --argjson base "$base" \
       '{log:{level:"error"},outbounds:($pool[0]|map(del(._pas_label))),
-        inbounds:[$pool[0]|to_entries[]|{type:"mixed",tag:("probe-"+(.key|tostring)),listen:"127.0.0.1",listen_port:(19100+.key)}],
+        inbounds:[$pool[0]|to_entries[]|{type:"mixed",tag:("probe-"+(.key|tostring)),listen:"127.0.0.1",listen_port:($base+.key)}],
         route:{rules:[$pool[0]|to_entries[]|{inbound:[("probe-"+(.key|tostring))],outbound:.value.tag}]},
         experimental:{clash_api:{external_controller:("127.0.0.1:"+($port|tostring)),secret:$secret}}}' > "$work/config.json"
     "$PAS_SB" check -c "$work/config.json" > "$work/core.log" 2>&1 || exit 1
@@ -79,7 +83,7 @@ preflight() (
             reap_checks "$work"
             [ "$running" -lt "$PARALLEL_CHECKS" ] || sleep 1
         done
-        qualify_node "$tag" "$index" "$work" &
+        qualify_node "$tag" "$index" "$work" "$base" &
         check_pids="$check_pids $!"; running=$((running+1)); index=$((index+1))
     done < "$work/tags"
     while [ "$running" -gt 0 ]; do

@@ -6,6 +6,7 @@ PAS_LIB=${PAS_LIB:-/usr/lib/podkop-autoswitch}
 . "$PAS_LIB/monitor.sh"
 . "$PAS_LIB/subscriptions.sh"
 . "$PAS_LIB/preflight.sh"
+. "$PAS_LIB/wan.sh"
 . "$PAS_LIB/integration.sh"
 # Recovery must work even if the newly edited addon settings are invalid.
 if [ "$1" = recover ]; then recover; exit $?; fi
@@ -19,6 +20,7 @@ case "$1" in
     recover) recover;;
     run) monitor;;
     updater) updater;;
+    sync-pool) sync_pool;;
     preflight) scan_pool;;
     status)
         [ -s "$PAS_RUN/status.json" ] || echo '{"phase":"stopped","current":"","servers":[]}' > "$PAS_RUN/status.json"
@@ -27,16 +29,19 @@ case "$1" in
         [ -s "$PAS_RUN/staged-health.json" ] && health="$PAS_RUN/staged-health.json" || health=/dev/null
         [ -s "$PAS_RUN/subscription-status.json" ] && imports="$PAS_RUN/subscription-status.json" || imports=/dev/null
         [ -s "$PAS_RUN/scan-status.json" ] && scans="$PAS_RUN/scan-status.json" || scans=/dev/null
+        [ -s "$PAS_RUN/sync-status.json" ] && syncing="$PAS_RUN/sync-status.json" || syncing=/dev/null
         scan_queued=false; [ ! -e "$PAS_RUN/request-scan" ] || scan_queued=true
         fetch_queued=false; [ ! -e "$PAS_RUN/request-fetch" ] || fetch_queued=true
         attached=false; [ ! -f "$PAS_HOME/attachment.json" ] || attached=true
         worker=false; worker_pid=$(cat "$PAS_RUN/updater.pid" 2>/dev/null)
         if [ -n "$worker_pid" ] && kill -0 "$worker_pid" 2>/dev/null; then worker=true; fi
-        jq --slurpfile staged "$labels" --slurpfile active "$active" --slurpfile health "$health" --slurpfile imports "$imports" --slurpfile scans "$scans" \
+        monitor_running=false; monitor_pid=$(cat "$PAS_RUN/monitor.pid" 2>/dev/null)
+        if [ -n "$monitor_pid" ] && kill -0 "$monitor_pid" 2>/dev/null; then monitor_running=true; fi
+        jq --slurpfile staged "$labels" --slurpfile active "$active" --slurpfile health "$health" --slurpfile imports "$imports" --slurpfile scans "$scans" --slurpfile syncing "$syncing" --argjson monitor "$monitor_running" \
           --argjson attached "$attached" --argjson worker "$worker" --argjson scan_queued "$scan_queued" --argjson fetch_queued "$fetch_queued" \
           --arg enabled "$(get enabled 0)" --arg section "$SECTION" \
           '($staged + $active | [ .[][] ] | unique_by(.tag)) as $pool |
-           . + {enabled:($enabled=="1"),attached:$attached,worker_running:$worker,subscription:($imports[0] // {state:"idle"}),scan:($scans[0] // {state:"idle"}),scan_queued:$scan_queued,fetch_queued:$fetch_queued,section:$section,available:[$pool[]|. as $node|{tag,name:._pas_label,protocol:.type,active:([ $active[][]? | .tag ] | index($node.tag) != null)}]} |
+           . + {enabled:($enabled=="1"),attached:$attached,worker_running:$worker,monitor_running:$monitor,sync:($syncing[0] // {state:"idle"}),subscription:($imports[0] // {state:"idle"}),scan:($scans[0] // {state:"idle"}),scan_queued:$scan_queued,fetch_queued:$fetch_queued,section:$section,available:[$pool[]|. as $node|{tag,name:._pas_label,protocol:.type,active:([ $active[][]? | .tag ] | index($node.tag) != null)}]} |
            .servers = ((.servers + [$health[][]?])|group_by(.tag)|map(sort_by(.checked_at)|last)) |
            .servers |= map(. as $s | . + {name:([$pool[]|select(.tag==$s.tag)|._pas_label][0] // .tag)})' "$PAS_RUN/status.json";;
     request-fetch|request-apply|request-scan) request_work "${1#request-}";;
@@ -45,13 +50,19 @@ case "$1" in
         printf '%s\n' "$2" | grep -Eq '^pas_[a-f0-9]{24}-out$' || exit 1
         lock && api_config && group || exit 1
         jq -e --arg t "$2" '.all|index($t)!=null' "$PAS_RUN/group.$$" >/dev/null || exit 1
+        old=$(jq -r .now "$PAS_RUN/group.$$")
         if [ "$DATA_CHECK" = 1 ]; then
             [ -s "$PAS_HOME/pool.json" ] || exit 1
             jq --arg t "$2" '[.[]|select(.tag==$t)]' "$PAS_HOME/pool.json" > "$PAS_RUN/manual-pool.json"
-            preflight "$PAS_RUN/manual-pool.json" "$PAS_RUN/manual-check" || { fail 'Manual selection failed payload qualification'; exit 1; }
+            preflight "$PAS_RUN/manual-pool.json" "$PAS_RUN/manual-check" manual || { fail 'Manual selection failed payload qualification'; exit 1; }
             api_config || exit 1
         fi
-        probe "$2" >/dev/null && select_proxy "$2" || { fail 'Manual selection failed health/API check'; exit 1; }
+        PAS_WAN_ROLE=manual
+        wan_probe || { fail 'Direct Internet unavailable; selection preserved'; exit 1; }
+        if ! select_proxy "$2" || ! active_probe "$2" >/dev/null; then
+            select_proxy "$old" || :
+            fail 'Manual selection failed payload/API check; previous selection restored'; exit 1
+        fi
         remember "$2"
         log "Manual selection: $2";;
     *) echo 'Usage: podkop-autoswitch {doctor|fetch|plan|preflight|apply|detach|recover|status|select TAG|request-scan}' >&2; exit 2;;

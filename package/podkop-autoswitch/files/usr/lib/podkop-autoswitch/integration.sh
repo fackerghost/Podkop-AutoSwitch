@@ -87,23 +87,39 @@ plan() {
     rm -rf "$work"
 }
 apply_pool() {
-    config && lock && doctor > "$PAS_RUN/doctor.log" 2>&1 || return 1
+    config && doctor > "$PAS_RUN/doctor.log" 2>&1 || return 1
     [ ! -d "$PAS_HOME/transaction" ] || { fail 'Pending recovery; run recover first'; return 1; }
     owned
-    local work tx="$PAS_HOME/transaction" candidate ready=0 i=0
+    local work tx="$PAS_HOME/transaction" candidate ready=0 i=0 before
+    before=$(sha256sum "$PAS_UCI/podkop" | cut -d' ' -f1)
+    if [ -s "$PAS_HOME/attachment.json" ] && [ "$before" != "$(cat "$PAS_HOME/applied-sha256" 2>/dev/null)" ]; then
+        fail 'Podkop was edited outside AutoSwitch; refusing to overwrite changes'; return 1
+    fi
     work=$(mktemp -d "$PAS_RUN/apply.XXXXXX") || return 1
     PAS_WORK=$work
     prepare "$work" || return 1
-    if [ -s "$PAS_HOME/pool.json" ] && cmp -s "$work/pool.json" "$PAS_HOME/pool.json"; then
+    if [ -s "$PAS_HOME/attachment.json" ] && [ -s "$PAS_HOME/pool.json" ] && cmp -s "$work/pool.json" "$PAS_HOME/pool.json" && group; then
         log 'Pool unchanged'; rm -rf "$work"; return 0
     fi
     # Probe the candidate pool in an isolated sing-box before touching production.
-    preflight "$work/pool.json" "$work/preflight" || { fail 'No usable server in candidate pool'; return 1; }
+    preflight "$work/pool.json" "$work/preflight" apply || { fail 'No usable server in candidate pool'; return 1; }
+    jq -s --argjson time "$(date +%s)" 'map(. + {healthy:(.delay_ms!=null),checked_at:$time})' \
+        "$work/preflight/results.ndjson" > "$PAS_RUN/staged-health.json.$$" &&
+        mv "$PAS_RUN/staged-health.json.$$" "$PAS_RUN/staged-health.json"
     candidate=$(cat "$work/preflight/selected")
+    # Only the short mutation phase pauses monitoring; qualification runs in an
+    # independent core while the existing selected server keeps being checked.
+    lock || return 1
+    [ "$before" = "$(sha256sum "$PAS_UCI/podkop" | cut -d' ' -f1)" ] || { fail 'Podkop changed during qualification; retrying later'; return 1; }
+    PAS_WAN_ROLE=sync
+    wan_probe || { fail 'Direct Internet unavailable; pool update deferred'; return 1; }
     # Existing healthy selection wins over the preflight speed ranking.
     if api_config && group; then
         local old; old=$(jq -r .now "$PAS_RUN/group.$$")
-        if jq -e --arg old "$old" 'any(.[];.tag==$old)' "$work/pool.json" >/dev/null && probe "$old" >/dev/null; then candidate=$old; fi
+        if [ -s "$PAS_HOME/attachment.json" ] && active_probe "$old" >/dev/null; then
+            jq -e --arg old "$old" 'any(.[];.tag==$old)' "$work/pool.json" >/dev/null || { fail 'Selection changed during preparation; retrying later'; return 1; }
+            candidate=$old
+        fi
     fi
     local selector_json
     selector_json=$(uci -c "$work/uci" -q get "podkop.$SECTION.outbound_json" | jq -c --arg t "$candidate" '.default=$t')

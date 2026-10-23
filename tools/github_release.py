@@ -57,7 +57,7 @@ def main():
     p = argparse.ArgumentParser()
     p.add_argument('action', choices=['create', 'push', 'release', 'runs'])
     p.add_argument('--message', default='Implement Podkop AutoSwitch with LuCI and runtime checks')
-    p.add_argument('--version', default='0.1.1')
+    p.add_argument('--version', default='0.1.2')
     p.add_argument('--commit', default='main')
     a = p.parse_args()
     if a.action == 'create':

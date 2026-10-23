@@ -25,14 +25,16 @@ echo 'PASS subscription local-file reference rejected'
 mkdir -p "$work/fsm/run" "$work/fsm/home"
 (
     PAS_RUN="$test_root/fsm/run"; PAS_HOME="$test_root/fsm/home"
+    echo '{"section":"main","sections":[]}' > "$PAS_HOME/attachment.json"
     . "$PAS_LIB/monitor.sh"
     INTERVAL=5; THRESHOLD=3; COOLDOWN=0; AUTO=1; MAX_NODES=64; DATA_CHECK=0
     a=pas_aaaaaaaaaaaaaaaaaaaaaaaa-out
     b=pas_bbbbbbbbbbbbbbbbbbbbbbbb-out
     printf '0\n' > "$test_root/tick"
-    printf '%s\n' "$a" > "$test_root/selected"
+    printf '%s\n' "$b" > "$test_root/selected"
     now() { echo $(($(cat "$test_root/tick")*5)); }
     api_config() { return 0; }
+    wan_probe() { return 0; }
     group() {
         [ "$(cat "$test_root/tick")" != 6 ] || return 1
         jq -n --arg a "$a" --arg b "$b" --arg current "$(cat "$test_root/selected")" \
@@ -64,7 +66,7 @@ jq -se '
   .[6].phase=="api_unavailable" and .[6].failures==0 and
   .[7].current==.[4].current
 ' "$work/history.ndjson" >/dev/null
-echo 'PASS startup minimum, three failures, failover, no failback, API-outage distinction'
+echo 'PASS startup stickiness, three failures, failover, no failback, API-outage distinction'
 printf '%s\n' '{"current":"a","failures":2,"threshold":3,"auto":true,"now":10,"last_switch":0,"cooldown":30,"healthy":false,"candidate":"b"}' |
     jq -f "$PAS_LIB/policy.jq" | jq -e '.action=="cooldown"' >/dev/null
 printf '%s\n' '{"current":"a","failures":2,"threshold":3,"auto":false,"now":99,"last_switch":0,"cooldown":0,"healthy":false,"candidate":"b"}' |

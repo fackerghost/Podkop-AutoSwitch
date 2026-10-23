@@ -6,14 +6,15 @@ record() {
         --argjson time "$(date +%s)" '{tag:$tag,healthy:$healthy,delay_ms:$ms,checked_at:$time}' >> "$PAS_RUN/results.$$"
 }
 scan() {
-    local tag delay best='' best_ms=2147483647
+    local tag delay
+    : > "$PAS_RUN/candidates.$$"
     if [ -s "$PAS_HOME/pool.json" ] && [ "$DATA_CHECK" = 1 ]; then
-        if preflight "$PAS_HOME/pool.json" "$PAS_RUN/failover-check"; then best=$(cat "$PAS_RUN/failover-check/selected"); fi
+        preflight "$PAS_HOME/pool.json" "$PAS_RUN/failover-check" failover || :
         if [ -s "$PAS_RUN/failover-check/results.ndjson" ]; then
             jq -c --argjson time "$(date +%s)" '. + {healthy:(.delay_ms!=null),checked_at:$time}' "$PAS_RUN/failover-check/results.ndjson" >> "$PAS_RUN/results.$$"
+            jq -sr '[.[]|select(.delay_ms!=null)]|sort_by(.delay_ms,.tag)|.[].tag' "$PAS_RUN/failover-check/results.ndjson" > "$PAS_RUN/candidates.$$"
         fi
-        [ -n "$best" ] || return 1
-        printf '%s\n' "$best"; return 0
+        [ -s "$PAS_RUN/candidates.$$" ]; return $?
     fi
     group || return 1
     jq -r '.all[]' "$PAS_RUN/group.$$" > "$PAS_RUN/members.$$"
@@ -22,10 +23,9 @@ scan() {
         case "$tag" in pas_*-out) ;; *) continue;; esac
         delay=$(probe "$tag") || delay=''
         record "$tag" "$delay"
-        if [ -n "$delay" ] && [ "$delay" -lt "$best_ms" ]; then best=$tag; best_ms=$delay; fi
     done < "$PAS_RUN/members.$$"
-    [ -n "$best" ] || return 1
-    printf '%s\n' "$best"
+    jq -sr '[.[]|select(.delay_ms!=null)]|sort_by(.delay_ms,.tag)|.[].tag' "$PAS_RUN/results.$$" > "$PAS_RUN/candidates.$$"
+    [ -s "$PAS_RUN/candidates.$$" ]
 }
 publish() {
     local phase="$1" current="$2" failures="$3" switched="$4"
@@ -44,8 +44,10 @@ remember() {
     atomic "$PAS_RUN/selected.$$" "$PAS_HOME/last-selected"
 }
 monitor() {
-    local current='' failures=0 switched=0 candidate delay phase start elapsed wait previous='' initialized=0 action next_scan=0
-    trap 'rm -f "$PAS_RUN"/auth.$$.* "$PAS_RUN/results.$$" "$PAS_RUN/group.$$" "$PAS_RUN/members.$$" "$PAS_RUN/selected.$$"; exit 0' INT TERM EXIT
+    local current='' failures=0 switched=0 candidate delay phase start elapsed wait previous='' action next_scan=0
+    printf '%s\n' "$$" > "$PAS_RUN/monitor.pid"
+    trap 'cleanup; rm -f "$PAS_RUN/results.$$" "$PAS_RUN/members.$$" "$PAS_RUN/selected.$$" "$PAS_RUN/candidates.$$"' EXIT
+    trap 'exit 0' INT TERM HUP
     : > "$PAS_RUN/results.$$"
     # A service reload must not cause a healthy server to be replaced.
     if [ -s "$PAS_RUN/status.json" ]; then
@@ -54,8 +56,12 @@ monitor() {
     fi
     while :; do
         start=$(now); phase=healthy
-        if [ -d "$PAS_RUN/mutation.lock" ]; then
+        if lock_busy; then
             publish applying "$current" "$failures" "$switched"
+            sleep "$INTERVAL"; continue
+        fi
+        if [ ! -s "$PAS_HOME/attachment.json" ]; then
+            publish awaiting_pool "$current" 0 "$switched"
             sleep "$INTERVAL"; continue
         fi
         if ! api_config || ! group; then
@@ -71,32 +77,27 @@ monitor() {
         if ! jq -e '(.all|length)>0 and all(.all[]; startswith("pas_") and endswith("-out") and length==32)' "$PAS_RUN/group.$$" >/dev/null; then
             publish unmanaged "$current" 0 "$switched"; sleep "$INTERVAL"; continue
         fi
-        if [ "$initialized" = 0 ]; then
-            if [ -n "$previous" ] && jq -e --arg p "$previous" '.all|index($p)!=null' "$PAS_RUN/group.$$" >/dev/null && delay=$(probe "$previous"); then
-                select_proxy "$previous" && current=$previous
-                record "$previous" "$delay"
-            else
-                candidate=$(scan) || candidate=''
-                if [ -n "$candidate" ] && select_proxy "$candidate"; then
-                    current=$candidate; switched=$(now); remember "$current"
-                fi
-            fi
-            initialized=1; previous=$current
-        elif [ -n "$previous" ] && [ "$current" != "$previous" ]; then
+        if [ -n "$previous" ] && [ "$current" != "$previous" ]; then
             # sing-box may have restarted or an administrator selected another node.
             # Restore sticky selection only after a restart: known selection is not
             # overridden blindly; external changes are adopted and reported.
             log 'Selector changed externally; adopting current selection'
             failures=0; switched=$(now); previous=$current
         fi
+        previous=$current
         delay=$(active_probe "$current") || delay=''
         record "$current" "$delay"
         if [ -n "$delay" ]; then
-            failures=0; remember "$current"
+            failures=0; remember "$current"; rm -f "$PAS_RUN/request-recovery"
         else
             # Distinguish a dead controller from a dead proxy.
             if ! group; then
                 phase=api_unavailable
+            elif ! wan_probe; then
+                # Missing direct Internet is not a proxy failure. Start a fresh
+                # failure sequence after WAN returns; never churn selectors.
+                failures=0; phase=wan_unavailable; next_scan=0
+                rm -f "$PAS_RUN/request-recovery"
             else
                 action=$(jq -nc --arg current "$current" --argjson failures "$failures" \
                     --argjson threshold "$THRESHOLD" --argjson auto "$([ "$AUTO" = 1 ] && echo true || echo false)" \
@@ -107,21 +108,44 @@ monitor() {
                 phase=$(printf '%s' "$action" | jq -r .action)
                 if [ "$phase" = scan ] && [ "$(now)" -ge "$next_scan" ]; then
                     publish scanning "$current" "$failures" "$switched"
-                    candidate=$(scan) || candidate=''
+                    scan || :
                     # If the old server recovered during the scan, retain it.
-                    if delay=$(active_probe "$current"); then
+                    if lock_busy; then
+                        phase=applying
+                    elif ! api_config || ! group; then
+                        phase=api_unavailable
+                    elif [ "$(jq -r .now "$PAS_RUN/group.$$")" != "$current" ]; then
+                        current=$(jq -r .now "$PAS_RUN/group.$$"); previous=$current; failures=0; phase=external_change
+                    elif delay=$(active_probe "$current"); then
                         record "$current" "$delay"; failures=0; phase=healthy
-                    elif [ -n "$candidate" ] && [ "$candidate" != "$current" ] && probe "$candidate" >/dev/null && select_proxy "$candidate"; then
-                        current=$candidate; previous=$current; failures=0; switched=$(now)
-                        remember "$current"; phase=switched; log "Selected $current after repeated failures"
-                    else
+                    elif ! wan_probe; then
+                        failures=0; phase=wan_unavailable
+                    elif lock; then
                         phase=no_healthy_backup
+                        while IFS= read -r candidate; do
+                            [ "$candidate" != "$current" ] || continue
+                            if select_proxy "$candidate" && delay=$(active_probe "$candidate"); then
+                                current=$candidate; previous=$current; failures=0; switched=$(now)
+                                record "$current" "$delay"; remember "$current"; phase=switched
+                                log "Selected $current after verified payload transfer"; break
+                            fi
+                            record "$candidate" ''
+                            # Restore the previous choice if the real route fails.
+                            select_proxy "$current" || { phase=api_unavailable; break; }
+                            wan_probe || { failures=0; phase=wan_unavailable; break; }
+                        done < "$PAS_RUN/candidates.$$"
+                        unlock
+                        [ "$phase" != no_healthy_backup ] || touch "$PAS_RUN/request-recovery"
+                    else
+                        phase=applying
                     fi
-                    next_scan=$(($(now)+30))
+                    next_scan=$(($(now)+RECOVERY_RETRY))
+                elif [ "$phase" = scan ]; then
+                    phase=no_healthy_backup
                 fi
             fi
         fi
-        if [ -f "$PAS_RUN/request-select" ]; then
+        if [ -f "$PAS_RUN/request-select" ] && [ "$phase" != wan_unavailable ]; then
             candidate=$(cat "$PAS_RUN/request-select"); rm -f "$PAS_RUN/request-select"
             if "$PAS_BIN" select "$candidate"; then
                 current=$candidate; previous=$current; switched=$(now); failures=0; phase=manual

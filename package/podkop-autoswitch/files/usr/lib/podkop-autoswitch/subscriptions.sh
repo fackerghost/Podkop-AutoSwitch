@@ -34,16 +34,17 @@ normalize() {
 }
 fetch() {
     config || return 1
-    lock || return 1
-    PAS_FETCH_ACTIVE=1; PAS_FETCH_SOURCE=0; PAS_FETCH_CODE=internal_error; PAS_FETCH_DETAIL=0
+    lock fetch || return 1
+    PAS_FETCH_ACTIVE=1; PAS_FETCH_SOURCE=0; PAS_FETCH_CODE=internal_error; PAS_FETCH_DETAIL=0; PAS_FETCH_FAILED=0
     fetch_status running
     if fetch_pool; then
-        fetch_status success
+        if [ "$PAS_FETCH_FAILED" -gt 0 ]; then fetch_status partial partial_update; else fetch_status success; fi
         PAS_FETCH_ACTIVE=0
         return 0
     fi
     fetch_status error "$PAS_FETCH_CODE"
     PAS_FETCH_ACTIVE=0
+    case "${PAS_WORK:-}" in "$PAS_RUN"/fetch.*) rm -rf "$PAS_WORK"; PAS_WORK='';; esac
     return 1
 }
 # Only safe status codes, counts and timestamps leave this interface. The raw
@@ -55,17 +56,35 @@ fetch_status() {
     jq -n --slurpfile old "$previous" --arg state "$1" --arg code "${2:-}" \
         --argjson time "$(date +%s)" --argjson nodes "$nodes" \
         --argjson source "${PAS_FETCH_SOURCE:-0}" --argjson detail "${PAS_FETCH_DETAIL:-0}" \
+        --argjson failed "${PAS_FETCH_FAILED:-0}" \
         '{state:$state,code:$code,updated_at:$time,nodes:$nodes,source:$source,detail:$detail,
-          last_success:(if $state=="success" then $time else ($old[0].last_success // null) end)}' \
+          failed_sources:$failed,last_success:(if $state=="success" or $state=="partial" then $time else ($old[0].last_success // null) end)}' \
         > "$PAS_RUN/subscription-status.json.$$" &&
         mv "$PAS_RUN/subscription-status.json.$$" "$PAS_RUN/subscription-status.json"
 }
 fetch_error() { PAS_FETCH_CODE=$1; fail "$2"; }
+download_source() {
+    local url="$1" work="$2"
+    case "$url" in https://*) ;; *) fetch_error invalid_url 'Subscription must use HTTPS'; return 1;; esac
+    jq -nr --arg url "$url" '"url = " + ($url|@json)' > "$work/curl.conf"
+    (ulimit -f "$((MAX_BYTES/512+2))"; curl -q -K "$work/curl.conf" --proto '=https' --proto-redir '=https' \
+        --noproxy '*' -fLsS --connect-timeout 10 --max-time 45 --max-redirs 3 \
+        --max-filesize "$MAX_BYTES" -A 'Podkop-AutoSwitch/0.1 sing-box' -o "$work/body" 2> "$work/download.log") || {
+            PAS_FETCH_DETAIL=$?
+            fetch_error download_failed "Subscription $PAS_FETCH_SOURCE download failed (curl $PAS_FETCH_DETAIL)"; return 1;
+        }
+    [ "$(wc -c < "$work/body")" -le "$MAX_BYTES" ] || { fetch_error too_large 'Subscription exceeds byte limit'; return 1; }
+    normalize "$work/body" "$work/pool.json" "$work" || { PAS_FETCH_CODE=unsupported_format; return 1; }
+    jq '{outbounds:map(del(._pas_label))}' "$work/pool.json" > "$work/check.json"
+    "$PAS_SB" check -c "$work/check.json" > "$work/check.log" 2>&1 || { PAS_FETCH_CODE=core_rejected; return 1; }
+}
 fetch_pool() {
-    local work section url enabled count=0
+    local work section url enabled count=0 good=0 key missing=0
     work=$(mktemp -d "$PAS_RUN/fetch.XXXXXX") || return 1
     PAS_WORK=$work
+    mkdir -p "$PAS_HOME/sources"
     : > "$work/pools.ndjson"
+    : > "$work/cache-keys"
     uci -c "$PAS_UCI" -q show podkop-autoswitch | sed -n 's/^podkop-autoswitch\.\([^=]*\)=subscription$/\1/p' > "$work/sources"
     while IFS= read -r section; do
         enabled=$(uci -c "$PAS_UCI" -q get "podkop-autoswitch.$section.enabled")
@@ -73,22 +92,24 @@ fetch_pool() {
         PAS_FETCH_SOURCE=$((count+1))
         fetch_status running
         url=$(uci -c "$PAS_UCI" -q get "podkop-autoswitch.$section.url")
-        case "$url" in https://*) ;; *) fetch_error invalid_url 'Subscription must use HTTPS'; return 1;; esac
-        # curl config quotes/escapes untrusted text. URL is never a shell argument.
-        jq -nr --arg url "$url" '"url = " + ($url|@json)' > "$work/curl.conf"
-        # ulimit also bounds chunked responses on older curl implementations.
-        (ulimit -f "$((MAX_BYTES/512+2))"; curl -q -K "$work/curl.conf" --proto '=https' --proto-redir '=https' \
-            --noproxy '*' -fLsS --connect-timeout 10 --max-time 45 --max-redirs 3 \
-            --max-filesize "$MAX_BYTES" -A 'Podkop-AutoSwitch/0.1 sing-box' -o "$work/body" 2> "$work/download.log") || {
-                PAS_FETCH_DETAIL=$?
-                fetch_error download_failed "Subscription $PAS_FETCH_SOURCE download failed (curl $PAS_FETCH_DETAIL); active pool preserved"; return 1;
-            }
-        [ "$(wc -c < "$work/body")" -le "$MAX_BYTES" ] || { fetch_error too_large 'Subscription exceeds byte limit'; return 1; }
-        normalize "$work/body" "$work/pool.json" "$work" || { PAS_FETCH_CODE=unsupported_format; return 1; }
-        cat "$work/pool.json" >> "$work/pools.ndjson"
+        key=$(printf '%s' "$url" | sha256sum | cut -d' ' -f1)
+        printf '%s.json\n' "$key" >> "$work/cache-keys"
+        if download_source "$url" "$work"; then
+            good=$((good+1))
+            if ! cmp -s "$work/pool.json" "$PAS_HOME/sources/$key.json"; then atomic "$work/pool.json" "$PAS_HOME/sources/$key.json" || return 1; fi
+            cat "$work/pool.json" >> "$work/pools.ndjson"
+        else
+            PAS_FETCH_FAILED=$((PAS_FETCH_FAILED+1))
+            if [ -s "$PAS_HOME/sources/$key.json" ]; then cat "$PAS_HOME/sources/$key.json" >> "$work/pools.ndjson"
+            else missing=1; fi
+        fi
         count=$((count+1))
     done < "$work/sources"
     [ "$count" -gt 0 ] || { fetch_error no_subscriptions 'No enabled subscriptions'; return 1; }
+    [ "$good" -gt 0 ] || return 1
+    # Migration from releases without per-source caches: preserve existing nodes
+    # if a failed provider has no cache yet, while accepting other fresh sources.
+    if [ "$missing" = 1 ] && [ -s "$PAS_HOME/staged.json" ]; then cat "$PAS_HOME/staged.json" >> "$work/pools.ndjson"; fi
     jq -sc 'add | unique_by(.tag) | sort_by(.tag)' "$work/pools.ndjson" > "$work/combined.json" || return 1
     [ "$(jq length "$work/combined.json")" -le "$MAX_NODES" ] || { fetch_error too_many_nodes 'Combined pool too large'; return 1; }
     # Validate with the actual installed core before accepting any update.
@@ -98,24 +119,56 @@ fetch_pool() {
         atomic "$work/combined.json" "$PAS_HOME/staged.json" || return 1
     fi
     date +%s > "$PAS_RUN/last-fetch"
+    local cached
+    for cached in "$PAS_HOME"/sources/*.json; do
+        [ -f "$cached" ] || continue
+        grep -Fxq "${cached##*/}" "$work/cache-keys" || rm -f "$cached"
+    done
     log "Subscription staged: $(jq length "$work/combined.json") servers"
     # Work directory contains credentials; remove only this mktemp-owned directory.
     rm -rf "$work"
 }
+sync_status() {
+    jq -n --arg state "$1" --arg code "${2:-}" --argjson time "$(date +%s)" \
+        '{state:$state,code:$code,updated_at:$time}' > "$PAS_RUN/sync-status.json.$$" &&
+        mv "$PAS_RUN/sync-status.json.$$" "$PAS_RUN/sync-status.json"
+}
+sync_pool() {
+    local fetched=0
+    sync_status fetching
+    fetch && fetched=1
+    # fetch and integration have separate locks; network timeouts must never
+    # suspend the active monitor. Release our fetch lock before integration.
+    unlock fetch
+    PAS_FETCH_ACTIVE=0
+    [ "$(get enabled 1)" = 1 ] || { sync_status paused; return "$((1-fetched))"; }
+    [ -s "$PAS_HOME/staged.json" ] || { sync_status waiting no_pool; return 1; }
+    if [ "$PAS_FETCH_CODE" = no_subscriptions ]; then sync_status waiting no_subscriptions; return 1; fi
+    PAS_WAN_ROLE=sync
+    if ! wan_probe; then sync_status waiting wan_unavailable; return 1; fi
+    sync_status preparing
+    if apply_pool; then
+        sync_status ready
+        [ "$PAS_FETCH_FAILED" -eq 0 ] || return 1
+        return "$((1-fetched))"
+    fi
+    sync_status error integration_failed
+    return 1
+}
 updater() {
-    local due=0 t
+    local due=0 t recovery_due=0 scan_pid=''
     printf '%s\n' "$$" > "$PAS_RUN/updater.pid"
     while :; do
         t=$(now)
-        if [ "$t" -ge "$due" ] || [ -e "$PAS_RUN/request-fetch" ]; then
-            rm -f "$PAS_RUN/request-fetch"
-            if "$PAS_BIN" fetch; then
-                due=$((t+UPDATE))
-                # Disabling monitoring must also prevent automatic Podkop writes.
-                [ "$AUTO_APPLY" = 1 ] && [ "$(get enabled 0)" = 1 ] && "$PAS_BIN" apply
+        if [ "$t" -ge "$due" ] || [ -e "$PAS_RUN/request-fetch" ] ||
+            { [ -e "$PAS_RUN/request-recovery" ] && [ "$t" -ge "$recovery_due" ]; }; then
+            rm -f "$PAS_RUN/request-fetch" "$PAS_RUN/request-recovery"
+            if "$PAS_BIN" sync-pool; then
+                due=$(($(now)+UPDATE))
             else
-                due=$((t+300)); log 'Subscription update failed; retry in 300s'
+                due=$(($(now)+OUTAGE_REFRESH)); log "Automatic subscription/pool sync will retry in ${OUTAGE_REFRESH}s"
             fi
+            recovery_due=$(($(now)+OUTAGE_REFRESH))
         fi
         if [ -e "$PAS_RUN/request-apply" ]; then
             rm -f "$PAS_RUN/request-apply"
@@ -125,9 +178,10 @@ updater() {
                 log 'Application skipped: monitoring is disabled'
             fi
         fi
-        if [ -e "$PAS_RUN/request-scan" ]; then
+        if [ -n "$scan_pid" ] && ! kill -0 "$scan_pid" 2>/dev/null; then wait "$scan_pid" 2>/dev/null || :; scan_pid=''; fi
+        if [ -e "$PAS_RUN/request-scan" ] && [ -z "$scan_pid" ]; then
             rm -f "$PAS_RUN/request-scan"
-            "$PAS_BIN" preflight > /dev/null || log 'Pool preflight found no usable server'
+            "$PAS_BIN" preflight > /dev/null & scan_pid=$!; PAS_SCAN_CHILD=$scan_pid
         fi
         sleep 5
     done

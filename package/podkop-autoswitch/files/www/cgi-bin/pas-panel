@@ -1,0 +1,49 @@
+#!/bin/sh
+# LAN-only, deliberately unauthenticated quick controls. Full settings stay in LuCI.
+umask 077
+PAS_BIN=${PAS_BIN:-/usr/bin/podkop-autoswitch}
+PAS_LIB=${PAS_LIB:-/usr/lib/podkop-autoswitch}
+PAS_RUN=${PAS_RUN:-/tmp/podkop-autoswitch}
+reply() {
+    printf 'Status: %s\r\nContent-Type: application/json; charset=utf-8\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\n\r\n%s\n' "$1" "$2"
+    exit 0
+}
+networks=''
+for zone in $(uci -q show firewall | sed -n 's/^firewall\.\([^=]*\)=zone$/\1/p'); do
+    if [ "$(uci -q get "firewall.$zone.name")" = lan ]; then networks="$networks $(uci -q get "firewall.$zone.network")"; fi
+done
+networks=${networks:-lan}
+hostname=$(uci -q get 'system.@system[0].hostname')
+domain=$(uci -q get 'dhcp.@dnsmasq[0].domain')
+ubus call network.interface dump 2>/dev/null | ucode "$PAS_LIB/lan-access.uc" "${REMOTE_ADDR:-}" "${HTTP_HOST:-}" "$networks" "$hostname" "${domain:-lan}" 2>/dev/null ||
+    reply '403 Forbidden' '{"ok":false,"code":"lan_only"}'
+case "${REQUEST_METHOD:-}" in
+GET)
+    result=$("$PAS_BIN" status 2>/dev/null) || reply '503 Service Unavailable' '{"ok":false,"code":"status_failed"}'
+    reply '200 OK' "$result";;
+POST)
+    # Custom JSON header blocks cross-origin form posts; no CORS is enabled.
+    [ "${HTTP_X_PAS_PANEL:-}" = 1 ] || reply '403 Forbidden' '{"ok":false,"code":"origin_denied"}'
+    case "${HTTP_ORIGIN:-}" in ''|"http://${HTTP_HOST}"|"https://${HTTP_HOST}") ;; *) reply '403 Forbidden' '{"ok":false,"code":"origin_denied"}';; esac
+    case "${CONTENT_TYPE:-}" in application/json*) ;; *) reply '415 Unsupported Media Type' '{"ok":false}';; esac
+    case "${CONTENT_LENGTH:-}" in ''|*[!0-9]*) reply '400 Bad Request' '{"ok":false}';; esac
+    [ "$CONTENT_LENGTH" -gt 0 ] && [ "$CONTENT_LENGTH" -le 256 ] || reply '413 Content Too Large' '{"ok":false}'
+    payload=$(dd bs=1 count="$CONTENT_LENGTH" 2>/dev/null)
+    action=$(printf '%s' "$payload" | jq -er '.action|select(type=="string")' 2>/dev/null) || reply '400 Bad Request' '{"ok":false}'
+    case "$action" in
+    fetch|scan)
+        result=$("$PAS_BIN" "request-$action" 2>/dev/null)
+        [ -n "$result" ] || reply '503 Service Unavailable' '{"ok":false,"code":"worker_unavailable"}'
+        reply '200 OK' "$result";;
+    select)
+        tag=$(printf '%s' "$payload" | jq -er '.tag|select(type=="string")' 2>/dev/null) || reply '400 Bad Request' '{"ok":false}'
+        printf '%s\n' "$tag" | grep -Eq '^pas_[a-f0-9]{24}-out$' || reply '400 Bad Request' '{"ok":false}'
+        "$PAS_BIN" status | jq -e --arg tag "$tag" '.enabled and .attached and .monitor_running and .phase!="wan_unavailable" and any(.available[];.tag==$tag and .active)' >/dev/null ||
+            reply '409 Conflict' '{"ok":false,"code":"not_ready"}'
+        mkdir -p "$PAS_RUN"
+        printf '%s\n' "$tag" > "$PAS_RUN/select-panel.$$" && mv "$PAS_RUN/select-panel.$$" "$PAS_RUN/request-select" || reply '503 Service Unavailable' '{"ok":false}'
+        reply '200 OK' '{"queued":true}';;
+    *) reply '400 Bad Request' '{"ok":false,"code":"invalid_action"}';;
+    esac;;
+*) reply '405 Method Not Allowed' '{"ok":false}';;
+esac

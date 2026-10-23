@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="ru">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Podkop AutoSwitch</title>
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; base-uri 'none'; object-src 'none'">
+<link rel="stylesheet" href="./panel.css">
+<body>
+<main>
+  <header><span class="eyebrow">ЛОКАЛЬНАЯ ПАНЕЛЬ</span><h1>Podkop AutoSwitch</h1><p id="address"></p></header>
+  <section class="current"><span>Текущий сервер</span><h2 id="current">Подключение…</h2><p id="state" role="status"></p><strong id="latency"></strong></section>
+  <nav><button id="refresh">Обновить подписки</button><button id="scan">Проверить серверы</button><a href="/cgi-bin/luci/admin/services/podkop-autoswitch">Настройки LuCI</a></nav>
+  <p id="notice" role="status"></p><p id="progress"></p>
+  <section><h2>Серверы <span id="count"></span></h2><div id="servers"></div></section>
+  <footer>Рабочий сервер сохраняется. При обрыве интернета автоматическая смена приостанавливается.</footer>
+</main>
+<script src="./panel.js" defer></script>
+</body>
+</html>

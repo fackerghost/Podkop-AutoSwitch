@@ -9,6 +9,8 @@ umask 077
 mkdir -p "$PAS_RUN" "$PAS_HOME" || exit 1
 chmod 700 "$PAS_RUN" "$PAS_HOME"
 cleanup() {
+    if [ -n "${PAS_SCAN_CHILD:-}" ]; then kill "$PAS_SCAN_CHILD" 2>/dev/null || :; wait "$PAS_SCAN_CHILD" 2>/dev/null || :; fi
+    if [ "$(cat "$PAS_RUN/monitor.pid" 2>/dev/null)" = "$$" ]; then rm -f "$PAS_RUN/monitor.pid"; fi
     if [ "${PAS_FETCH_ACTIVE:-0}" = 1 ]; then
         fetch_status error interrupted
     fi
@@ -22,10 +24,13 @@ cleanup() {
         rm -f "$PAS_RUN/updater.pid"
     fi
     case "${PAS_WORK:-}" in "$PAS_RUN"/fetch.*|"$PAS_RUN"/plan.*|"$PAS_RUN"/apply.*) rm -rf "$PAS_WORK";; esac
-    if [ "$(cat "$PAS_RUN/mutation.lock/pid" 2>/dev/null)" = "$$" ]; then
-        rm -f "$PAS_RUN/mutation.lock/pid"; rmdir "$PAS_RUN/mutation.lock" 2>/dev/null || :
-    fi
-    rm -f "$PAS_RUN"/auth.$$.* "$PAS_RUN/group.$$"
+    local kind
+    for kind in mutation fetch; do
+        if [ "$(cat "$PAS_RUN/$kind.lock/pid" 2>/dev/null)" = "$$" ]; then
+            rm -f "$PAS_RUN/$kind.lock/pid"; rmdir "$PAS_RUN/$kind.lock" 2>/dev/null || :
+        fi
+    done
+    rm -f "$PAS_RUN"/auth.$$.* "$PAS_RUN/group.$$" "$PAS_RUN/results.$$" "$PAS_RUN/candidates.$$" "$PAS_RUN/members.$$" "$PAS_RUN/selected.$$"
 }
 trap cleanup EXIT
 trap 'exit 1' INT TERM HUP
@@ -39,8 +44,9 @@ config() {
     SELECTOR="$SECTION-out"
     INTERVAL=$(get interval 5); THRESHOLD=$(get failure_threshold 3)
     TIMEOUT=$(get timeout_ms 1500); COOLDOWN=$(get cooldown 30)
-    AUTO=$(get auto_switch 1); UPDATE=$(get update_interval 86400)
-    AUTO_APPLY=$(get auto_apply 0); MAX_NODES=$(get max_nodes 64)
+    AUTO=$(get auto_switch 1); UPDATE=$(get update_interval 3600)
+    RECOVERY_RETRY=$(get recovery_retry 10); OUTAGE_REFRESH=$(get outage_refresh 60)
+    MAX_NODES=$(get max_nodes 64)
     MAX_BYTES=$(get max_bytes 1048576)
     DATA_CHECK=$(get data_check 1)
     DATA_URL=$(get data_url 'https://www.cloudflare.com/cdn-cgi/trace')
@@ -52,9 +58,17 @@ config() {
     num timeout "$TIMEOUT" 200 10000 && num cooldown "$COOLDOWN" 0 86400 &&
     num update "$UPDATE" 300 2592000 && num nodes "$MAX_NODES" 1 256 &&
     num bytes "$MAX_BYTES" 1024 8388608 || { fail 'Invalid numeric configuration'; return 1; }
-    case "$AUTO:$AUTO_APPLY" in [01]:[01]) ;; *) return 1;; esac
+    case "$AUTO" in 0|1) ;; *) return 1;; esac
     num attempts "$QUALIFY_ATTEMPTS" 2 6 && num successes "$QUALIFY_SUCCESSES" 2 "$QUALIFY_ATTEMPTS" || return 1
     num parallel_checks "$PARALLEL_CHECKS" 1 8 || return 1
+    num recovery_retry "$RECOVERY_RETRY" 5 300 && num outage_refresh "$OUTAGE_REFRESH" 15 3600 || return 1
+    WAN_URLS=$(get wan_url 'https://1.1.1.1/cdn-cgi/trace https://8.8.8.8/resolve?name=example.com&type=A')
+    local wan_url wan_count=0
+    for wan_url in $WAN_URLS; do
+        case "$wan_url" in https://*) ;; *) return 1;; esac
+        wan_count=$((wan_count+1))
+    done
+    [ "$wan_count" -ge 1 ] && [ "$wan_count" -le 3 ] || return 1
     case "$DATA_CHECK" in 0|1) ;; *) return 1;; esac
     case "$DATA_URL:$QUALIFY_URL:$DATA_FALLBACK" in https://*:https://*:https://*) ;; *) return 1;; esac
     URLS=$(get test_url 'https://www.gstatic.com/generate_204 https://cp.cloudflare.com/generate_204')
@@ -68,20 +82,37 @@ config() {
     CONFIG_PATH=${CONFIG_PATH:-/etc/sing-box/config.json}
 }
 now() { cut -d. -f1 /proc/uptime; }
+lock_busy() {
+    local directory="$PAS_RUN/${1:-mutation}.lock" pid
+    [ -d "$directory" ] || return 1
+    pid=$(cat "$directory/pid" 2>/dev/null)
+    if [ -n "$pid" ] && ! kill -0 "$pid" 2>/dev/null; then
+        rm -f "$directory/pid"; rmdir "$directory" 2>/dev/null || return 0
+        return 1
+    fi
+    return 0
+}
 lock() {
-    if ! mkdir "$PAS_RUN/mutation.lock" 2>/dev/null; then
-        local pid; pid=$(cat "$PAS_RUN/mutation.lock/pid" 2>/dev/null)
+    local directory="$PAS_RUN/${1:-mutation}.lock"
+    if ! mkdir "$directory" 2>/dev/null; then
+        local pid; pid=$(cat "$directory/pid" 2>/dev/null)
         if [ -n "$pid" ] && ! kill -0 "$pid" 2>/dev/null; then
-            rm -f "$PAS_RUN/mutation.lock/pid"
-            rmdir "$PAS_RUN/mutation.lock" 2>/dev/null || return 1
-            mkdir "$PAS_RUN/mutation.lock" 2>/dev/null || return 1
+            rm -f "$directory/pid"
+            rmdir "$directory" 2>/dev/null || return 1
+            mkdir "$directory" 2>/dev/null || return 1
         else
             fail 'Another update/transaction is running'; return 1
         fi
     fi
-    echo $$ > "$PAS_RUN/mutation.lock/pid"
+    echo $$ > "$directory/pid"
     trap cleanup EXIT
     trap 'exit 1' INT TERM HUP
+}
+unlock() {
+    local directory="$PAS_RUN/${1:-mutation}.lock"
+    if [ "$(cat "$directory/pid" 2>/dev/null)" = "$$" ]; then
+        rm -f "$directory/pid"; rmdir "$directory" 2>/dev/null || :
+    fi
 }
 atomic() { cp "$1" "$2.new.$$" && chmod 600 "$2.new.$$" && mv -f "$2.new.$$" "$2"; }
 api_config() {

@@ -12,6 +12,7 @@ jq -n --slurpfile pool "$PAS_HOME/staged.json" --slurpfile result "$PAS_RUN/stag
 [ "$(jq length "$lab/home/pool.json")" = 2 ] || { echo 'Need two payload-qualified nodes'; exit 1; }
 cp "$lab/home/pool.json" "$lab/original-pool.json"
 cp "$lab/home/pool.json" "$lab/home/staged.json"
+echo '{"section":"main","sections":[]}' > "$lab/home/attachment.json"
 uci -c "$lab/config" set podkop-autoswitch.main.cooldown=0
 uci -c "$lab/config" commit podkop-autoswitch
 export PAS_HOME="$lab/home" PAS_RUN="$lab/run" PAS_UCI="$lab/config" PAS_CONFIG_PATH="$lab/config.json"

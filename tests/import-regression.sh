@@ -16,6 +16,12 @@ cleanup_test() {
 trap cleanup_test EXIT
 trap 'exit 1' INT TERM HUP
 cp "$2" "$PAS_UCI/podkop-autoswitch"
+# This test exercises one live provider. Multi-provider failures have a separate
+# deterministic regression, avoiding assumptions about the user's source count.
+first=1
+for source in $(uci -c "$PAS_UCI" show podkop-autoswitch | sed -n 's/^podkop-autoswitch\.\([^=]*\)=subscription$/\1/p'); do
+    if [ "$first" = 1 ]; then first=0; else uci -c "$PAS_UCI" set "podkop-autoswitch.$source.enabled=0"; fi
+done
 uci -c "$PAS_UCI" set podkop-autoswitch.main.enabled=0
 uci -c "$PAS_UCI" set podkop-autoswitch.main.auto_apply=1
 uci -c "$PAS_UCI" set podkop-autoswitch.main.qualify_attempts=2
@@ -25,6 +31,8 @@ uci -c "$PAS_UCI" commit podkop-autoswitch
 cat > "$PAS_BIN" <<'SH'
 #!/bin/sh
 case "$1" in apply|attach|detach|run) touch "$PAS_TEST_ROOT/UNSAFE"; exit 1;; esac
+# Import/RPC regression never invokes integration; dynamic sync is tested alone.
+[ "$1" != sync-pool ] || set -- fetch
 exec "$PAS_REAL_BIN" "$@"
 SH
 cat > "$PAS_INIT" <<'SH'
