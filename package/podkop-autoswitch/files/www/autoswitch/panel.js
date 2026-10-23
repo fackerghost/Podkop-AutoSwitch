@@ -6,7 +6,7 @@
     const states = { healthy: 'Автоматический режим работает', awaiting_pool: 'Автоматическое подключение пула…',
         scanning: 'Ищем рабочий резерв…', no_healthy_backup: 'Поиск продолжается. Подписки обновляются автоматически.',
         wan_unavailable: 'Прямой интернет недоступен. Выбор сервера сохранён.', applying: 'Обновляем состав пула…',
-        api_unavailable: 'Нет связи с sing-box', integration_error: 'Недоступен локальный proxy Podkop',
+        api_unavailable: 'Нет связи с sing-box', selector_missing: 'Группа серверов изменена в Podkop. Восстанавливаем пул…', integration_error: 'Недоступен локальный proxy Podkop',
         wait: 'Проверяем отказ текущего сервера…', cooldown: 'Пауза между переключениями',
         switched: 'Работа выбранного сервера подтверждена', manual: 'Сервер выбран', manual_failed: 'Проверка выбранного сервера не прошла. Прежний выбор сохранён.' };
     const errors = { lan_only: 'Эта панель доступна только из LAN-подсети роутера по его локальному адресу.',
@@ -45,7 +45,7 @@
             sub.state === 'error' ? 'Ошибка загрузки подписок. Сохранён прежний пул; загрузка повторится автоматически.' : '';
         byId('refresh').disabled = busy || sub.state === 'running' || d.fetch_queued;
         byId('scan').disabled = busy || !nodes.length || scan.state === 'running' || d.scan_queued;
-        const ready = d.enabled && d.attached && d.monitor_running && d.phase !== 'wan_unavailable' && !busy;
+        const ready = d.enabled && d.attached && d.monitor_running && !['wan_unavailable', 'selector_missing', 'api_unavailable', 'integration_error', 'applying'].includes(d.phase) && !busy;
         const fragment = document.createDocumentFragment();
         nodes.slice().sort((a, b) => {
             const x = health.get(a.tag) || {}, y = health.get(b.tag) || {};

@@ -64,12 +64,22 @@ monitor() {
             publish awaiting_pool "$current" 0 "$switched"
             sleep "$INTERVAL"; continue
         fi
-        if ! api_config || ! group; then
-            publish api_unavailable "$current" "$failures" "$switched"
+        if [ "$(sha256sum "$PAS_UCI/podkop" 2>/dev/null | cut -d' ' -f1)" != "$(cat "$PAS_HOME/applied-sha256" 2>/dev/null)" ]; then
+            touch "$PAS_RUN/request-reconcile"
+        fi
+        if ! api_config; then
+            publish api_unavailable '' 0 "$switched"
+            sleep "$INTERVAL"; continue
+        fi
+        if ! group; then
+            phase=$(group_failure_phase)
+            [ "$phase" != selector_missing ] || touch "$PAS_RUN/request-reconcile"
+            publish "$phase" '' 0 "$switched"
             sleep "$INTERVAL"; continue
         fi
         current=$(jq -r .now "$PAS_RUN/group.$$")
         if [ "$DATA_CHECK" = 1 ] && ! jq -e 'any(.inbounds[]; .tag=="service-mixed-in" and .listen=="127.0.0.1")' "$CONFIG_PATH" >/dev/null; then
+            touch "$PAS_RUN/request-reconcile"
             publish integration_error "$current" "$failures" "$switched"
             sleep "$INTERVAL"; continue
         fi

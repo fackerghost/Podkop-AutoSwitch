@@ -1,4 +1,5 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
+. "$PAS_LIB/reconcile.sh"
 prepare() {
     local work="$1" tag section node existing current='' target
     [ -s "$PAS_HOME/staged.json" ] || { fail 'Fetch a subscription first'; return 1; }
@@ -7,21 +8,23 @@ prepare() {
     }
     # Never absorb uncommitted edits from another LuCI session.
     [ -z "$(uci -c "$PAS_UCI" -q changes podkop)" ] || { fail 'Commit pending Podkop edits first'; return 1; }
-    mkdir -p "$work/uci"
+    mkdir -p "$work/uci/.delta"
     cp "$PAS_UCI/podkop" "$work/uci/podkop" || return 1
     cp "$PAS_HOME/staged.json" "$work/pool.json" || return 1
+    owned_sections > "$work/old-sections" || { fail 'Invalid attachment section list'; return 1; }
+    prepare_restore "$work" || return 1
     if [ "$DATA_CHECK" = 1 ]; then
         # Official Podkop's only per-section loopback mixed inbound is the service
         # proxy for downloading lists. Reuse it without opening any LAN listener.
         local download_section download_enabled
-        download_enabled=$(uci -c "$work/uci" -q get podkop.settings.download_lists_via_proxy)
-        download_section=$(uci -c "$work/uci" -q get podkop.settings.download_lists_via_proxy_section)
+        download_enabled=$(uci -c "$work/uci" -t "$work/uci/.delta" -q get podkop.settings.download_lists_via_proxy)
+        download_section=$(uci -c "$work/uci" -t "$work/uci/.delta" -q get podkop.settings.download_lists_via_proxy_section)
         if [ "$download_enabled" = 1 ] && [ "$download_section" != "$SECTION" ]; then
             fail 'Service mixed proxy already belongs to another section; resolve this conflict or disable data_check'; return 1
         fi
         grep -q 'SB_SERVICE_MIXED_INBOUND_PORT=4534' /usr/lib/podkop/constants.sh || { fail 'Unverified service proxy port'; return 1; }
-        uci -c "$work/uci" set podkop.settings.download_lists_via_proxy=1 &&
-        uci -c "$work/uci" set "podkop.settings.download_lists_via_proxy_section=$SECTION" || return 1
+        uci -c "$work/uci" -t "$work/uci/.delta" set podkop.settings.download_lists_via_proxy=1 &&
+        uci -c "$work/uci" -t "$work/uci/.delta" set "podkop.settings.download_lists_via_proxy_section=$SECTION" || return 1
     fi
     if api_config && group; then current=$(jq -r .now "$PAS_RUN/group.$$"); fi
     # Keep a removed but active node until it stops working, avoiding a subscription-induced switch.
@@ -33,31 +36,25 @@ prepare() {
     [ "$(jq length "$work/pool.json")" -le "$MAX_NODES" ] || { fail 'Pool limit includes retained active node'; return 1; }
     target=$(jq -r --arg current "$current" 'if any(.[];.tag==$current) then $current else .[0].tag end' "$work/pool.json")
     # Owned section list, not a wildcard deletion, protects unrelated user settings.
-    if [ -s "$PAS_HOME/attachment.json" ]; then
-        jq -r '.sections[]' "$PAS_HOME/attachment.json" > "$work/old-sections"
-        while IFS= read -r section; do
-            [ "$(uci -c "$work/uci" -q get "podkop.$section.pas_managed")" = 1 ] || { fail 'Managed section ownership conflict'; return 1; }
-            uci -c "$work/uci" -q delete "podkop.$section" || return 1
-        done < "$work/old-sections"
-    fi
+    remove_owned_sections "$work/uci" "$work/old-sections" || return 1
     jq -c '.[]|del(._pas_label)' "$work/pool.json" > "$work/nodes"
     : > "$work/sections"
     while IFS= read -r node; do
         tag=$(printf '%s' "$node" | jq -r .tag); section=${tag%-out}
-        existing=$(uci -c "$work/uci" -q get "podkop.$section")
+        existing=$(uci -c "$work/uci" -t "$work/uci/.delta" -q get "podkop.$section")
         [ -z "$existing" ] || { fail 'Generated section name conflict'; return 1; }
-        uci -c "$work/uci" set "podkop.$section=section" &&
-        uci -c "$work/uci" set "podkop.$section.connection_type=proxy" &&
-        uci -c "$work/uci" set "podkop.$section.proxy_config_type=outbound" &&
-        uci -c "$work/uci" set "podkop.$section.pas_managed=1" &&
-        uci -c "$work/uci" set "podkop.$section.outbound_json=$node" || return 1
+        uci -c "$work/uci" -t "$work/uci/.delta" set "podkop.$section=section" &&
+        uci -c "$work/uci" -t "$work/uci/.delta" set "podkop.$section.connection_type=proxy" &&
+        uci -c "$work/uci" -t "$work/uci/.delta" set "podkop.$section.proxy_config_type=outbound" &&
+        uci -c "$work/uci" -t "$work/uci/.delta" set "podkop.$section.pas_managed=1" &&
+        uci -c "$work/uci" -t "$work/uci/.delta" set "podkop.$section.outbound_json=$node" || return 1
         printf '%s\n' "$section" >> "$work/sections"
     done < "$work/nodes"
     node=$(jq -nc --slurpfile nodes "$work/pool.json" --arg tag "$SELECTOR" --arg target "$target" \
         '{type:"selector",tag:$tag,outbounds:[$nodes[0][].tag],default:$target,interrupt_exist_connections:true}')
-    uci -c "$work/uci" set "podkop.$SECTION.proxy_config_type=outbound" &&
-    uci -c "$work/uci" set "podkop.$SECTION.outbound_json=$node" &&
-    uci -c "$work/uci" commit podkop || return 1
+    uci -c "$work/uci" -t "$work/uci/.delta" set "podkop.$SECTION.proxy_config_type=outbound" &&
+    uci -c "$work/uci" -t "$work/uci/.delta" set "podkop.$SECTION.outbound_json=$node" &&
+    uci -c "$work/uci" -t "$work/uci/.delta" commit podkop || return 1
     # Candidate uses the exact existing routing/DNS/inbounds. Replace only managed outbounds.
     jq --arg selector "$SELECTOR" --argjson group "$node" --slurpfile nodes "$work/pool.json" \
         --slurpfile owned "$PAS_RUN/owned.json" \
@@ -92,13 +89,22 @@ apply_pool() {
     owned
     local work tx="$PAS_HOME/transaction" candidate ready=0 i=0 before
     before=$(sha256sum "$PAS_UCI/podkop" | cut -d' ' -f1)
-    if [ -s "$PAS_HOME/attachment.json" ] && [ "$before" != "$(cat "$PAS_HOME/applied-sha256" 2>/dev/null)" ]; then
-        fail 'Podkop was edited outside AutoSwitch; refusing to overwrite changes'; return 1
-    fi
     work=$(mktemp -d "$PAS_RUN/apply.XXXXXX") || return 1
     PAS_WORK=$work
     prepare "$work" || return 1
-    if [ -s "$PAS_HOME/attachment.json" ] && [ -s "$PAS_HOME/pool.json" ] && cmp -s "$work/pool.json" "$PAS_HOME/pool.json" && group; then
+    if [ -s "$PAS_HOME/attachment.json" ] && [ -s "$PAS_HOME/pool.json" ] && cmp -s "$work/pool.json" "$PAS_HOME/pool.json" &&
+        managed_signature "$PAS_UCI" "$work/sections" > "$work/current-signature" &&
+        managed_signature "$work/uci" "$work/sections" > "$work/next-signature" &&
+        cmp -s "$work/current-signature" "$work/next-signature" && group &&
+        jq -e --slurpfile pool "$work/pool.json" '(.all|sort)==([$pool[0][].tag]|sort)' "$PAS_RUN/group.$$" >/dev/null; then
+        lock || return 1
+        [ "$before" = "$(sha256sum "$PAS_UCI/podkop" | cut -d' ' -f1)" ] &&
+            [ -z "$(uci -c "$PAS_UCI" -q changes podkop)" ] || { fail 'Podkop changed during preparation'; return 1; }
+        if [ "$before" != "$(cat "$PAS_HOME/applied-sha256" 2>/dev/null)" ]; then
+            commit_restore "$work" || return 1
+            printf '%s\n' "$before" > "$PAS_HOME/applied-sha256"
+            log 'Podkop edits preserved; existing pool remains connected'
+        fi
         log 'Pool unchanged'; rm -rf "$work"; return 0
     fi
     # Probe the candidate pool in an isolated sing-box before touching production.
@@ -111,6 +117,7 @@ apply_pool() {
     # independent core while the existing selected server keeps being checked.
     lock || return 1
     [ "$before" = "$(sha256sum "$PAS_UCI/podkop" | cut -d' ' -f1)" ] || { fail 'Podkop changed during qualification; retrying later'; return 1; }
+    [ -z "$(uci -c "$PAS_UCI" -q changes podkop)" ] || { fail 'Pending Podkop edits; retrying later'; return 1; }
     PAS_WAN_ROLE=sync
     wan_probe || { fail 'Direct Internet unavailable; pool update deferred'; return 1; }
     # Existing healthy selection wins over the preflight speed ranking.
@@ -122,18 +129,16 @@ apply_pool() {
         fi
     fi
     local selector_json
-    selector_json=$(uci -c "$work/uci" -q get "podkop.$SECTION.outbound_json" | jq -c --arg t "$candidate" '.default=$t')
-    uci -c "$work/uci" set "podkop.$SECTION.outbound_json=$selector_json" && uci -c "$work/uci" commit podkop || return 1
+    selector_json=$(uci -c "$work/uci" -t "$work/uci/.delta" -q get "podkop.$SECTION.outbound_json" | jq -c --arg t "$candidate" '.default=$t')
+    uci -c "$work/uci" -t "$work/uci/.delta" set "podkop.$SECTION.outbound_json=$selector_json" && uci -c "$work/uci" -t "$work/uci/.delta" commit podkop || return 1
     mkdir "$tx" || return 1
     cp "$PAS_UCI/podkop" "$tx/podkop"
     cp "$CONFIG_PATH" "$tx/config.json"
     printf '%s\n' "$CONFIG_PATH" > "$tx/config-path"
-    for i in pool.json attachment.json applied-sha256; do [ ! -f "$PAS_HOME/$i" ] || cp "$PAS_HOME/$i" "$tx/$i"; done
-    # Keep original UCI for detach. Checksum guards against overwriting later admin edits.
-    if [ ! -f "$PAS_HOME/attachment.json" ]; then
-        cp "$PAS_UCI/podkop" "$PAS_HOME/original-podkop"
-        cp "$CONFIG_PATH" "$PAS_HOME/original-singbox.json"
-    fi
+    for i in pool.json attachment.json applied-sha256 original-podkop original-singbox.json; do
+        [ ! -f "$PAS_HOME/$i" ] || cp "$PAS_HOME/$i" "$tx/$i" || return 1
+    done
+    touch "$tx/restore-snapshot-v2"
     sync
     /bin/sh "$PAS_LIB/watchdog.sh" "$tx" "$PAS_UCI" "$PAS_HOME" > "$PAS_RUN/rollback.log" 2>&1 &
     atomic "$work/uci/podkop" "$PAS_UCI/podkop" || return 1
@@ -148,6 +153,7 @@ apply_pool() {
     mkdir "$tx/decision" 2>/dev/null || { fail 'Watchdog already recovering'; return 1; }
     echo $$ > "$tx/decision/pid"
     atomic "$work/pool.json" "$PAS_HOME/pool.json" && atomic "$work/attachment.json" "$PAS_HOME/attachment.json" || return 1
+    commit_restore "$work" || return 1
     sha256sum "$PAS_UCI/podkop" | cut -d' ' -f1 > "$PAS_HOME/applied-sha256"
     touch "$tx/committed"
     sync

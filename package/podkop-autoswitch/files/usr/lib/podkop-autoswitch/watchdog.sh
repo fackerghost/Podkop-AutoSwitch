@@ -15,7 +15,9 @@ echo $$ > "$tx/decision/pid"
 config_path=$(cat "$tx/config-path")
 cp "$tx/podkop" "$ucidir/podkop.rollback" && mv "$ucidir/podkop.rollback" "$ucidir/podkop" || exit 1
 cp "$tx/config.json" "$config_path.rollback" && mv "$config_path.rollback" "$config_path" || exit 1
-for name in pool.json attachment.json applied-sha256; do
+metadata='pool.json attachment.json applied-sha256'
+[ ! -e "$tx/restore-snapshot-v2" ] || metadata="$metadata original-podkop original-singbox.json"
+for name in $metadata; do
     if [ -f "$tx/$name" ]; then cp "$tx/$name" "$home_dir/$name"; else rm -f "$home_dir/$name"; fi
 done
 "${PAS_PODKOP_INIT:-/etc/init.d/podkop}" restart

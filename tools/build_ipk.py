@@ -6,8 +6,8 @@ import io
 import tarfile
 
 ROOT = Path(__file__).resolve().parents[1]
-VERSION = '0.1.2'
-EPOCH = 1792713600
+VERSION = '0.1.3'
+EPOCH = 1792756800
 
 def tar_gz(files):
     raw = io.BytesIO()

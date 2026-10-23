@@ -38,7 +38,7 @@ POST)
     select)
         tag=$(printf '%s' "$payload" | jq -er '.tag|select(type=="string")' 2>/dev/null) || reply '400 Bad Request' '{"ok":false}'
         printf '%s\n' "$tag" | grep -Eq '^pas_[a-f0-9]{24}-out$' || reply '400 Bad Request' '{"ok":false}'
-        "$PAS_BIN" status | jq -e --arg tag "$tag" '.enabled and .attached and .monitor_running and .phase!="wan_unavailable" and any(.available[];.tag==$tag and .active)' >/dev/null ||
+        "$PAS_BIN" status | jq -e --arg tag "$tag" '.enabled and .attached and .monitor_running and (.phase as $p | ["wan_unavailable","selector_missing","api_unavailable","integration_error","applying"] | index($p)==null) and any(.available[];.tag==$tag and .active)' >/dev/null ||
             reply '409 Conflict' '{"ok":false,"code":"not_ready"}'
         mkdir -p "$PAS_RUN"
         printf '%s\n' "$tag" > "$PAS_RUN/select-panel.$$" && mv "$PAS_RUN/select-panel.$$" "$PAS_RUN/request-select" || reply '503 Service Unavailable' '{"ok":false}'

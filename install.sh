@@ -89,4 +89,4 @@ else
     apk add --allow-untrusted "$work/$package"
 fi
 echo 'Podkop AutoSwitch installed/updated. Settings retained. Open Services -> Podkop AutoSwitch.'
-echo 'On first installation, proxy monitoring and switching are disabled.'
+echo 'On first installation, automatic mode is enabled; add subscriptions in LuCI. Existing settings are retained.'

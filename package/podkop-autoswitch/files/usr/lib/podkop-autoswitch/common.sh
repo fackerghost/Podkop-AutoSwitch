@@ -140,6 +140,11 @@ group() {
     api GET "/proxies/$(uri "$SELECTOR")" > "$PAS_RUN/group.$$" &&
     jq -e '.type == "Selector" and (.all|type == "array") and (.now|type == "string")' "$PAS_RUN/group.$$" >/dev/null
 }
+group_failure_phase() {
+    if api GET /version | jq -e 'type=="object"' >/dev/null 2>&1; then
+        printf '%s\n' selector_missing
+    else printf '%s\n' api_unavailable; fi
+}
 probe() {
     local tag="$1" url delay best='' enc
     enc=$(uri "$tag")

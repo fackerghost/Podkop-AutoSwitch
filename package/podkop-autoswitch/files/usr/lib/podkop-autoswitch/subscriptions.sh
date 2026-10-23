@@ -161,8 +161,8 @@ updater() {
     while :; do
         t=$(now)
         if [ "$t" -ge "$due" ] || [ -e "$PAS_RUN/request-fetch" ] ||
-            { [ -e "$PAS_RUN/request-recovery" ] && [ "$t" -ge "$recovery_due" ]; }; then
-            rm -f "$PAS_RUN/request-fetch" "$PAS_RUN/request-recovery"
+            { { [ -e "$PAS_RUN/request-recovery" ] || [ -e "$PAS_RUN/request-reconcile" ]; } && [ "$t" -ge "$recovery_due" ]; }; then
+            rm -f "$PAS_RUN/request-fetch" "$PAS_RUN/request-recovery" "$PAS_RUN/request-reconcile"
             if "$PAS_BIN" sync-pool; then
                 due=$(($(now)+UPDATE))
             else

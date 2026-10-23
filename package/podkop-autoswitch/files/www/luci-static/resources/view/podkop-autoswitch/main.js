@@ -102,7 +102,7 @@ return view.extend({
                 else if (imported.state === 'running') importText = errorText('interrupted');
                 if (imported.state === 'error' && imported.nodes) importText += ' ' + _('Ранее загруженные серверы сохранены.');
                 if (imported.state === 'partial') importText = _('Подписки обновлены частично. Серверов: ') + imported.nodes + ' · ' + _('Недоступных подписок: ') + imported.failed_sources + '. ' + _('Ранее загруженные узлы сохранены; повтор будет автоматическим.');
-                var phases = { healthy: _('Работает'), waiting: _('Проверка отказа'), wait: _('Проверка отказа'), scanning: _('Поиск рабочего резерва'), no_healthy_backup: _('Поиск продолжается, подписки обновляются'), wan_unavailable: _('Прямой интернет недоступен: смена сервера приостановлена'), awaiting_pool: _('Автоматическое подключение пула'), applying: _('Обновление состава пула'), api_unavailable: _('Нет связи с API sing-box'), integration_error: _('Недоступен локальный proxy Podkop'), unmanaged: _('Ожидание автоматического подключения'), cooldown: _('Пауза между переключениями'), switched: _('Переключение подтверждено'), manual_failed: _('Сервер не прошёл проверку; прежний выбор сохранён') };
+                var phases = { healthy: _('Работает'), waiting: _('Проверка отказа'), wait: _('Проверка отказа'), scanning: _('Поиск рабочего резерва'), no_healthy_backup: _('Поиск продолжается, подписки обновляются'), wan_unavailable: _('Прямой интернет недоступен: смена сервера приостановлена'), awaiting_pool: _('Автоматическое подключение пула'), applying: _('Обновление состава пула'), api_unavailable: _('Нет связи с API sing-box'), selector_missing: _('Группа серверов изменена в Podkop — восстанавливаем пул'), integration_error: _('Недоступен локальный proxy Podkop'), unmanaged: _('Ожидание автоматического подключения'), cooldown: _('Пауза между переключениями'), switched: _('Переключение подтверждено'), manual_failed: _('Сервер не прошёл проверку; прежний выбор сохранён') };
                 var sync = d.sync || {};
                 var syncText = sync.state === 'error' ? _('Не удалось автоматически подключить пул. Повтор выполняется автоматически; подробности в logread -e podkop-autoswitch.') : sync.code === 'wan_unavailable' ? phases.wan_unavailable : sync.code === 'no_subscriptions' ? errorText('no_subscriptions') : sync.state === 'preparing' ? _('Автоматическая проверка и подключение обновлённого пула…') : '';
                 var results = {};
@@ -120,7 +120,7 @@ return view.extend({
                         E('td', { 'class': 'td' }, r.healthy === true ? _('Доступен') : r.healthy === false ? _('Недоступен') : _('Не проверен')),
                         E('td', { 'class': 'td' }, r.delay_ms != null ? r.delay_ms + ' ms' : '—'),
                         E('td', { 'class': 'td' }, checked),
-                        E('td', { 'class': 'td' }, button(_('Переключить'), function() { return selectNode(node.tag); }, !d.enabled || !d.monitor_running || !d.attached || !node.active || node.tag === d.current || d.phase === 'wan_unavailable'))
+                        E('td', { 'class': 'td' }, button(_('Переключить'), function() { return selectNode(node.tag); }, !d.enabled || !d.monitor_running || !d.attached || !node.active || node.tag === d.current || ['wan_unavailable', 'selector_missing', 'api_unavailable', 'integration_error', 'applying'].indexOf(d.phase) >= 0))
                     ]);
                 });
                 if (!rows.length) rows.push(E('tr', { 'class': 'tr' }, [E('td', { 'class': 'td', 'colspan': 6 }, loading ? _('Серверы появятся после загрузки подписок…') : _('Список пуст. Добавьте подписку и сохраните настройки; причину ошибки загрузки смотрите выше.'))]));
@@ -128,7 +128,7 @@ return view.extend({
                 dom.content(state, [
                     E('h3', {}, _('Состояние')),
                     E('p', {}, [E('a', { 'href': '/autoswitch/', 'target': '_blank', 'rel': 'noopener' }, _('Открыть локальную панель без входа')), ' · ', window.location.origin + '/autoswitch/']),
-                    E('p', {}, _('Служба: ') + (d.enabled ? (d.monitor_running ? (phases[d.phase] || d.phase) : _('Монитор не запущен — проверьте журнал службы')) : _('пауза')) + ' · ' + _('Пул: ') + (d.attached ? _('подключён') : _('ожидает автоматического подключения')) + ' · ' + _('Текущий: ') + (names[d.current] || d.current || '—') + ' · ' + _('Ошибок подряд: ') + (d.failures || 0)),
+                    E('p', {}, _('Служба: ') + (d.enabled ? (d.monitor_running ? (phases[d.phase] || d.phase) : _('Монитор не запущен — проверьте журнал службы')) : _('пауза')) + ' · ' + _('Пул: ') + (d.phase === 'selector_missing' ? _('требует восстановления') : d.phase === 'api_unavailable' ? _('состояние не подтверждено') : d.attached ? _('подключён') : _('ожидает автоматического подключения')) + ' · ' + _('Текущий: ') + (names[d.current] || d.current || '—') + ' · ' + _('Ошибок подряд: ') + (d.failures || 0)),
                     E('p', { 'class': sync.state === 'error' ? 'alert-message warning' : '' }, syncText),
                     E('p', { 'class': imported.state === 'error' || imported.state === 'partial' ? 'alert-message warning' : '' }, importText),
                     E('p', { 'class': scan.state === 'error' ? 'alert-message warning' : '' }, scanText),
