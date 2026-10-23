@@ -48,7 +48,7 @@ EOF
 post '{"action":"scan"}' | grep -q '200 OK'
 [ "$(cat "$root/actions")" = request-scan ]
 HTTP_ORIGIN=https://attacker.example post '{"action":"fetch"}' | grep -q '403 Forbidden'
-HTTP_X_PAS_PANEL='' post '{"action":"fetch"}' | grep -q '403 Forbidden'
+HTTP_ORIGIN='' post '{"action":"fetch"}' | grep -q '403 Forbidden'
 post '{"action":"shell"}' | grep -q '400 Bad Request'
 post '{"action":"select","tag":"invalid"}' | grep -q '400 Bad Request'
 post '{"action":"select","tag":"pas_aaaaaaaaaaaaaaaaaaaaaaaa-out"}' | grep -q '200 OK'

@@ -22,9 +22,9 @@ GET)
     result=$("$PAS_BIN" status 2>/dev/null) || reply '503 Service Unavailable' '{"ok":false,"code":"status_failed"}'
     reply '200 OK' "$result";;
 POST)
-    # Custom JSON header blocks cross-origin form posts; no CORS is enabled.
-    [ "${HTTP_X_PAS_PANEL:-}" = 1 ] || reply '403 Forbidden' '{"ok":false,"code":"origin_denied"}'
-    case "${HTTP_ORIGIN:-}" in ''|"http://${HTTP_HOST}"|"https://${HTTP_HOST}") ;; *) reply '403 Forbidden' '{"ok":false,"code":"origin_denied"}';; esac
+    # uhttpd exports Origin and Content-Type, but not arbitrary X-* headers.
+    # Require same-origin JSON; cross-origin forms/preflights are not accepted.
+    case "${HTTP_ORIGIN:-}" in "http://${HTTP_HOST}"|"https://${HTTP_HOST}") ;; *) reply '403 Forbidden' '{"ok":false,"code":"origin_denied"}';; esac
     case "${CONTENT_TYPE:-}" in application/json*) ;; *) reply '415 Unsupported Media Type' '{"ok":false}';; esac
     case "${CONTENT_LENGTH:-}" in ''|*[!0-9]*) reply '400 Bad Request' '{"ok":false}';; esac
     [ "$CONTENT_LENGTH" -gt 0 ] && [ "$CONTENT_LENGTH" -le 256 ] || reply '413 Content Too Large' '{"ok":false}'

@@ -43,3 +43,4 @@ QUALIFY_ATTEMPTS=4; PARALLEL_CHECKS=3
 preflight "$root/pool.json" "$root/retries"
 jq -se 'length==3 and any(.[]; .tag=="test-0" and .attempts==3 and .delay_ms==100) and any(.[]; .tag=="test-1" and .attempts==4 and .delay_ms==null)' "$root/retries/results.ndjson" >/dev/null
 echo 'PASS parallel retries, consecutive success requirement and retention of failed nodes'
+
